@@ -1,0 +1,396 @@
+package com.mygdx.game;
+
+import com.badlogic.gdx.Game;
+import com.mygdx.game.screens.GameScreen;
+
+public class MyGdxGame extends Game {
+    
+    @Override
+    public void create() {
+        // 设置游戏主屏幕
+        setScreen(new GameScreen(this));
+    }
+
+    @Override
+    public void dispose() {
+        super.dispose();
+    }
+}
+
+package com.mygdx.game.screens;
+
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Screen;
+import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.OrthographicCamera;
+import com.badlogic.gdx.graphics.g2d.SpriteBatch;
+import com.badlogic.gdx.math.Vector2;
+import com.badlogic.gdx.physics.box2d.*;
+import com.badlogic.gdx.utils.viewport.FitViewport;
+import com.badlogic.gdx.utils.viewport.Viewport;
+import com.mygdx.game.MyGdxGame;
+import com.mygdx.game.sprites.Player;
+import com.mygdx.game.sprites.Platform;
+
+public class GameScreen implements Screen {
+    private MyGdxGame game;
+    private SpriteBatch batch;
+    
+    // 相机和视口
+    private OrthographicCamera camera;
+    private Viewport viewport;
+    
+    // Box2D 物理世界
+    private World world;
+    private Box2DDebugRenderer debugRenderer;
+    
+    // 游戏对象
+    private Player player;
+    private Platform platform;
+    
+    public GameScreen(MyGdxGame game) {
+        this.game = game;
+        batch = new SpriteBatch();
+        
+        // 设置相机和视口
+        camera = new OrthographicCamera();
+        viewport = new FitViewport(800, 480, camera);
+        camera.position.set(viewport.getWorldWidth() / 2, viewport.getWorldHeight() / 2, 0);
+        
+        // 创建物理世界
+        world = new World(new Vector2(0, -9.8f), true);
+        debugRenderer = new Box2DDebugRenderer();
+        
+        // 创建游戏对象
+        player = new Player(world, 100, 200);
+        platform = new Platform(world, 400, 100, 600, 50);
+    }
+    
+    @Override
+    public void show() {
+        
+    }
+    
+    @Override
+    public void render(float delta) {
+        // 清除屏幕
+        Gdx.gl.glClearColor(0.2f, 0.6f, 1f, 1);
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
+        
+        // 更新物理世界
+        world.step(1/60f, 6, 2);
+        
+        // 更新相机
+        camera.update();
+        batch.setProjectionMatrix(camera.combined);
+        
+        // 渲染游戏对象
+        batch.begin();
+        player.draw(batch);
+        platform.draw(batch);
+        batch.end();
+        
+        // 调试渲染物理世界
+        debugRenderer.render(world, camera.combined);
+        
+        // 处理输入
+        handleInput();
+    }
+    
+    private void handleInput() {
+        if (Gdx.input.isKeyPressed(com.badlogic.gdx.Input.Keys.LEFT)) {
+            player.moveLeft();
+        }
+        if (Gdx.input.isKeyPressed(com.badlogic.gdx.Input.Keys.RIGHT)) {
+            player.moveRight();
+        }
+        if (Gdx.input.isKeyJustPressed(com.badlogic.gdx.Input.Keys.SPACE)) {
+            player.jump();
+        }
+    }
+    
+    @Override
+    public void resize(int width, int height) {
+        viewport.update(width, height);
+        camera.position.set(viewport.getWorldWidth() / 2, viewport.getWorldHeight() / 2, 0);
+    }
+    
+    @Override
+    public void pause() {
+        
+    }
+    
+    @Override
+    public void resume() {
+        
+    }
+    
+    @Override
+    public void hide() {
+        
+    }
+    
+    @Override
+    public void dispose() {
+        batch.dispose();
+        world.dispose();
+        debugRenderer.dispose();
+        player.dispose();
+        platform.dispose();
+    }
+}
+
+package com.mygdx.game.sprites;
+
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.Sprite;
+import com.badlogic.gdx.graphics.g2d.SpriteBatch;
+import com.badlogic.gdx.math.Vector2;
+import com.badlogic.gdx.physics.box2d.*;
+
+public class Player {
+    private World world;
+    private Body body;
+    private Texture texture;
+    private Sprite sprite;
+    
+    private final float MOVE_SPEED = 5f;
+    private final float JUMP_FORCE = 10f;
+    
+    public Player(World world, float x, float y) {
+        this.world = world;
+        
+        // 加载纹理
+        texture = new Texture(Gdx.files.internal("player.png")); // 需要准备图片资源
+        sprite = new Sprite(texture);
+        sprite.setSize(32, 64); // 设置玩家大小
+        
+        // 创建物理身体
+        BodyDef bodyDef = new BodyDef();
+        bodyDef.type = BodyDef.BodyType.DynamicBody;
+        bodyDef.position.set(x, y);
+        bodyDef.fixedRotation = true; // 防止旋转
+        
+        body = world.createBody(bodyDef);
+        
+        // 创建碰撞形状
+        PolygonShape shape = new PolygonShape();
+        shape.setAsBox(sprite.getWidth() / 2, sprite.getHeight() / 2);
+        
+        // 创建夹具定义
+        FixtureDef fixtureDef = new FixtureDef();
+        fixtureDef.shape = shape;
+        fixtureDef.density = 1f;
+        fixtureDef.friction = 0.4f;
+        fixtureDef.restitution = 0.2f;
+        
+        body.createFixture(fixtureDef);
+        shape.dispose();
+    }
+    
+    public void moveLeft() {
+        body.setLinearVelocity(-MOVE_SPEED, body.getLinearVelocity().y);
+    }
+    
+    public void moveRight() {
+        body.setLinearVelocity(MOVE_SPEED, body.getLinearVelocity().y);
+    }
+    
+    public void jump() {
+        // 只有在接触地面时才能跳跃
+        if (isOnGround()) {
+            body.applyLinearImpulse(new Vector2(0, JUMP_FORCE), body.getWorldCenter(), true);
+        }
+    }
+    
+    private boolean isOnGround() {
+        // 简单的地面检测
+        return body.getLinearVelocity().y == 0;
+    }
+    
+    public void draw(SpriteBatch batch) {
+        sprite.setPosition(body.getPosition().x - sprite.getWidth() / 2, 
+                          body.getPosition().y - sprite.getHeight() / 2);
+        sprite.draw(batch);
+    }
+    
+    public void dispose() {
+        texture.dispose();
+        world.destroyBody(body);
+    }
+}
+
+package com.mygdx.game.sprites;
+
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.Sprite;
+import com.badlogic.gdx.graphics.g2d.SpriteBatch;
+import com.badlogic.gdx.physics.box2d.*;
+
+public class Platform {
+    private World world;
+    private Body body;
+    private Texture texture;
+    private Sprite sprite;
+    
+    public Platform(World world, float x, float y, float width, float height) {
+        this.world = world;
+        
+        // 加载纹理
+        texture = new Texture(Gdx.files.internal("platform.png")); // 需要准备图片资源
+        sprite = new Sprite(texture);
+        sprite.setSize(width, height);
+        
+        // 创建静态物理身体
+        BodyDef bodyDef = new BodyDef();
+        bodyDef.type = BodyDef.BodyType.StaticBody;
+        bodyDef.position.set(x, y);
+        
+        body = world.createBody(bodyDef);
+        
+        // 创建碰撞形状
+        PolygonShape shape = new PolygonShape();
+        shape.setAsBox(width / 2, height / 2);
+        
+        // 创建夹具定义
+        FixtureDef fixtureDef = new FixtureDef();
+        fixtureDef.shape = shape;
+        fixtureDef.density = 0f; // 静态物体不需要密度
+        fixtureDef.friction = 0.8f;
+        fixtureDef.restitution = 0.1f;
+        
+        body.createFixture(fixtureDef);
+        shape.dispose();
+    }
+    
+    public void draw(SpriteBatch batch) {
+        sprite.setPosition(body.getPosition().x - sprite.getWidth() / 2, 
+                          body.getPosition().y - sprite.getHeight() / 2);
+        sprite.draw(batch);
+    }
+    
+    public void dispose() {
+        texture.dispose();
+        world.destroyBody(body);
+    }
+}
+
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.mygdx</groupId>
+    <artifactId>platformer-game</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>Platformer Game</name>
+    <description>A simple 2D platformer game using LibGDX</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <java.version>17</java.version>
+        <gdx.version>1.12.0</gdx.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>central</id>
+            <url>https://repo.maven.apache.org/maven2</url>
+        </repository>
+        <repository>
+            <id>gdx-releases</id>
+            <url>https://oss.sonatype.org/content/repositories/releases/</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- LibGDX 核心依赖 -->
+        <dependency>
+            <groupId>com.badlogicgames.gdx</groupId>
+            <artifactId>gdx</artifactId>
+            <version>${gdx.version}</version>
+        </dependency>
+        
+        <!-- LibGDX 后端依赖 (桌面) -->
+        <dependency>
+            <groupId>com.badlogicgames.gdx</groupId>
+            <artifactId>gdx-backend-lwjgl3</artifactId>
+            <version>${gdx.version}</version>
+        </dependency>
+        
+        <!-- LibGDX 平台特定依赖 -->
+        <dependency>
+            <groupId>com.badlogicgames.gdx</groupId>
+            <artifactId>gdx-platform</artifactId>
+            <version>${gdx.version}</version>
+            <classifier>natives-desktop</classifier>
+        </dependency>
+        
+        <!-- Box2D 物理引擎 -->
+        <dependency>
+            <groupId>com.badlogicgames.gdx</groupId>
+            <artifactId>gdx-box2d</artifactId>
+            <version>${gdx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.badlogicgames.gdx</groupId>
+            <artifactId>gdx-box2d-platform</artifactId>
+            <version>${gdx.version}</version>
+            <classifier>natives-desktop</classifier>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                </configuration>
+            </plugin>
+            
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>default-cli</id>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>com.mygdx.game.desktop.DesktopLauncher</mainClass>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+
+package com.mygdx.game.desktop;
+
+import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
+import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
+import com.mygdx.game.MyGdxGame;
+
+public class DesktopLauncher {
+    public static void main(String[] args) {
+        Lwjgl3ApplicationConfiguration config = new Lwjgl3ApplicationConfiguration();
+        config.setTitle("Platformer Game");
+        config.setWindowedMode(800, 480);
+        config.setResizable(false);
+        new Lwjgl3Application(new MyGdxGame(), config);
+    }
+}

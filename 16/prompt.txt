@@ -1,0 +1,41 @@
+你现在是一位有 10 年经验的 Java 架构师，同时也是 Redis 专家。  
+请用中文，按以下要求给出「Redis + LangChain4J 实现上下文记忆」的完整落地方案。  
+要求：
+
+1. 场景  
+   我们正在开发一个对话式 AI 应用（例如客服机器人）。  
+   需要把同一用户的对话历史保存在 Redis 中，并在下一次请求时由 LangChain4J 自动拼接成上下文，供大模型继续对话。  
+   会话有效期 30 分钟，超过后自动丢弃。
+
+2. 技术约束  
+   - 后端语言：Java 17  
+   - 框架：Spring Boot 3.x + LangChain4J 0.27 及以上  
+   - Redis：单机或哨兵模式均可，使用 Lettuce 连接  
+   - 序列化：JSON（Jackson）  
+   - 线程安全：接口需支持并发请求  
+
+3. 输出格式  
+   3.1 目录结构  
+   3.2 Maven/Gradle 依赖  
+   3.3 application.yml 中 Redis 配置  
+   3.4 核心代码：  
+        - RedisChatMemoryStore（实现 ChatMemoryStore）  
+        - ChatService（演示 sendMessage 方法）  
+        - 工具类：Key 生成、TTL 刷新  
+   3.5 序列化/反序列化示例（SystemMessage, HumanMessage, AiMessage）  
+   3.6 并发与异常处理要点  
+   3.7 单元测试（含嵌入式 Redis）  
+   3.8 可扩展性：如何支持多端登录、消息分页、持久化到 MySQL  
+
+4. 代码规范  
+   - Java 17 语法（record, switch 表达式）  
+   - Lombok 简化 POJO  
+   - 注释用中文，关键步骤用「// STEP: xxx」标记  
+   - 任何魔法数字写成常量  
+   - 异常不要吞掉，统一转自定义 BusinessException  
+
+5. 额外加分项  
+   - 给出 Redis 内存优化建议（如 LRU、压缩列表）  
+   - 给出 Prometheus 指标埋点示例（记录命中率、平均消息长度）  
+
+请确保所有代码可直接复制到 IDEA 中运行，无需手工补充类或依赖。

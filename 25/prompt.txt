@@ -1,0 +1,47 @@
+【角色】  
+你是一名资深 Java 架构师，精通 Spring Boot 3、Reactor、异步 I/O、PDF 解析、Milvus 2.x、OpenAI text-embedding-ada-002 以及向量检索优化。
+
+【目标】  
+用 Java 实现一个端到端 POC：  
+1. 输入：单份 1000 页 PDF 招股书（平均 600 MB）。  
+2. 输出：  
+   • 30 秒内完成「分段 → Embedding → Milvus 建索引」；  
+   • 对外暴露 GET /prospectus/{id}/search?q=xxx 实现语义检索 Top10。  
+3. 分段策略：  
+   • 先目录识别 → 按章节、小节、页眉页脚剔除；  
+   • 再滑动窗口（512 tokens, overlap 64）切文本块；  
+   • 每块生成：{id, docId, title, chunkNo, content, embedding}。  
+4. 技术栈：  
+   • PDFBox 或 pdf2htmlEX CLI 并行页解析；  
+   • Reactor + Schedulers.boundedElastic() 全链路无阻塞；  
+   • OpenAI embedding（1536 维）批量并发，限流 3000 RPM；  
+   • Milvus 2.x 分区键 docId + IVF_SQ8 索引、nlist=4096；  
+   • Spring Boot 3 + spring-ai-milvus starter。  
+5. 性能目标：  
+   • 30 s 内完成 1000 页解析+向量化+索引（单节点 8C32G）；  
+   • 检索延迟 < 100 ms（Top10，R@10≥0.9）。  
+6. 可观测：Micrometer + Prometheus 指标：pages/sec、embedding/sec、index_latency。  
+7. 幂等：docId 做幂等键，重复上传直接返回 200。  
+
+【输出要求】  
+1. Maven pom.xml 片段（Spring Boot 3.2, reactor-core, pdfbox, milvus-sdk-java, openai-java）。  
+2. application.yml（线程池、OpenAI key、Milvus uri/bucket、分段参数）。  
+3. ER 图 & DDL（Milvus collection prospectus_chunk）。  
+4. 核心类：  
+   • ProspectusController（/upload, /search）  
+   • PdfSegmenter（并行解析 → Chunk Stream）  
+   • EmbeddingService（batch embed + retry + backpressure）  
+   • MilvusIndexService（createIndex, insertAsync）  
+   • ProspectusSearchService（ANN search → rerank）  
+5. 流程图（plantuml）：upload → segment → embed → index → done。  
+6. 单元测试：  
+   • 10 页 PDF 30 s 内完成；  
+   • 同 docId 幂等；  
+   • 检索 Top1 命中率≥0.95。  
+7. README.md：启动、压测、扩容指南。  
+
+【约束】  
+- Java 17，禁止 Lombok，日志统一 SLF4J。  
+- 禁止出现中文注释以外的中文字符串。  
+- 所有外部 I/O 必须带超时 + 重试。  
+- 代码风格：Google Java Format。  

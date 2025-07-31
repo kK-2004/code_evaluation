@@ -1,0 +1,88 @@
+package com.example.demo.controller;
+
+import com.example.demo.model.Product;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+@RestController
+@RequestMapping("/api/products")
+public class ProductController {
+
+    // 模拟内存中的产品数据库
+    private final List<Product> products = new ArrayList<>();
+    private int nextId = 1;
+
+    // 获取所有产品
+    @GetMapping
+    public ResponseEntity<List<Product>> getAllProducts() {
+        return ResponseEntity.ok(products);
+    }
+
+    // 根据ID获取单个产品
+    @GetMapping("/{id}")
+    public ResponseEntity<Product> getProductById(@PathVariable int id) {
+        Optional<Product> product = products.stream()
+                .filter(p -> p.getId() == id)
+                .findFirst();
+
+        return product.map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    // 添加新产品
+    @PostMapping
+    public ResponseEntity<Product> addProduct(@RequestBody Product newProduct) {
+        // 设置新ID
+        newProduct.setId(nextId++);
+        products.add(newProduct);
+        
+        return ResponseEntity.ok(newProduct);
+    }
+}
+
+package com.example.demo.model;
+
+public class Product {
+    private int id;
+    private String name;
+    private float price;
+
+    // 构造方法、getter和setter
+    public Product() {
+    }
+
+    public Product(int id, String name, float price) {
+        this.id = id;
+        this.name = name;
+        this.price = price;
+    }
+
+    // Getter和Setter方法
+    public int getId() {
+        return id;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public float getPrice() {
+        return price;
+    }
+
+    public void setPrice(float price) {
+        this.price = price;
+    }
+}

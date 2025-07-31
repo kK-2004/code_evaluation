@@ -1,0 +1,16 @@
+用Java 17 + Spring Boot 3 + MyBatis-Plus 3.5.x 写一个仪表盘，可以生成「销售额日报」的 ECharts 图表与后端查询接口。
+输出要求
+给出pom以及文件目录层级
+技术栈固定：
+• Spring Boot 3.x
+• ECharts 5.x CDN（前端单页）
+• MySQL 8.x
+为了方便，这里测试数据写死就行，不用读数据库
+运行效果：
+浏览器访问 http://localhost:8080/daily-sales.html 即可看到昨日/今日销售额折线图；后端接口 GET /api/daily-sales?date=2024-07-29 返回 JSON：
+[{"date":"2024-07-29","amount":12345.67}]
+
+约定：
+• 表名 daily_sales（id, sale_date, amount DECIMAL(12,2)）。
+• 支持查询参数 date（yyyy-MM-dd），为空时默认今日。
+• 前端用原生 JS + ECharts CDN，无需打包。

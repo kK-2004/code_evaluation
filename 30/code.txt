@@ -1,0 +1,370 @@
+package com.example.game2048;
+
+public enum Direction {
+    UP, DOWN, LEFT, RIGHT
+}
+
+package com.example.game2048;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+
+public class GameLogic {
+    private static final int SIZE = 4;
+    private int[][] board;
+    private int score;
+    private boolean moved;
+    private Random random;
+
+    public GameLogic() {
+        board = new int[SIZE][SIZE];
+        score = 0;
+        random = new Random();
+        addRandomTile();
+        addRandomTile();
+    }
+
+    public void move(Direction direction) {
+        moved = false;
+        int[][] oldBoard = new int[SIZE][SIZE];
+        for (int i = 0; i < SIZE; i++) {
+            System.arraycopy(board[i], 0, oldBoard[i], 0, SIZE);
+        }
+
+        switch (direction) {
+            case UP:
+                moveUp();
+                break;
+            case DOWN:
+                moveDown();
+                break;
+            case LEFT:
+                moveLeft();
+                break;
+            case RIGHT:
+                moveRight();
+                break;
+        }
+
+        if (!isBoardEqual(oldBoard)) {
+            addRandomTile();
+            moved = true;
+        }
+    }
+
+    private void moveUp() {
+        for (int col = 0; col < SIZE; col++) {
+            List<Integer> nonZeroTiles = new ArrayList<>();
+            for (int row = 0; row < SIZE; row++) {
+                if (board[row][col] != 0) {
+                    nonZeroTiles.add(board[row][col]);
+                }
+            }
+
+            mergeTiles(nonZeroTiles);
+
+            for (int row = 0; row < SIZE; row++) {
+                if (row < nonZeroTiles.size()) {
+                    board[row][col] = nonZeroTiles.get(row);
+                } else {
+                    board[row][col] = 0;
+                }
+            }
+        }
+    }
+
+    private void moveDown() {
+        for (int col = 0; col < SIZE; col++) {
+            List<Integer> nonZeroTiles = new ArrayList<>();
+            for (int row = SIZE - 1; row >= 0; row--) {
+                if (board[row][col] != 0) {
+                    nonZeroTiles.add(board[row][col]);
+                }
+            }
+
+            mergeTiles(nonZeroTiles);
+
+            for (int row = SIZE - 1; row >= 0; row--) {
+                int index = SIZE - 1 - row;
+                if (index < nonZeroTiles.size()) {
+                    board[row][col] = nonZeroTiles.get(index);
+                } else {
+                    board[row][col] = 0;
+                }
+            }
+        }
+    }
+
+    private void moveLeft() {
+        for (int row = 0; row < SIZE; row++) {
+            List<Integer> nonZeroTiles = new ArrayList<>();
+            for (int col = 0; col < SIZE; col++) {
+                if (board[row][col] != 0) {
+                    nonZeroTiles.add(board[row][col]);
+                }
+            }
+
+            mergeTiles(nonZeroTiles);
+
+            for (int col = 0; col < SIZE; col++) {
+                if (col < nonZeroTiles.size()) {
+                    board[row][col] = nonZeroTiles.get(col);
+                } else {
+                    board[row][col] = 0;
+                }
+            }
+        }
+    }
+
+    private void moveRight() {
+        for (int row = 0; row < SIZE; row++) {
+            List<Integer> nonZeroTiles = new ArrayList<>();
+            for (int col = SIZE - 1; col >= 0; col--) {
+                if (board[row][col] != 0) {
+                    nonZeroTiles.add(board[row][col]);
+                }
+            }
+
+            mergeTiles(nonZeroTiles);
+
+            for (int col = SIZE - 1; col >= 0; col--) {
+                int index = SIZE - 1 - col;
+                if (index < nonZeroTiles.size()) {
+                    board[row][col] = nonZeroTiles.get(index);
+                } else {
+                    board[row][col] = 0;
+                }
+            }
+        }
+    }
+
+    private void mergeTiles(List<Integer> tiles) {
+        for (int i = 0; i < tiles.size() - 1; i++) {
+            if (tiles.get(i).equals(tiles.get(i + 1))) {
+                int mergedValue = tiles.get(i) * 2;
+                score += mergedValue;
+                tiles.set(i, mergedValue);
+                tiles.remove(i + 1);
+            }
+        }
+    }
+
+    private void addRandomTile() {
+        List<int[]> emptyTiles = new ArrayList<>();
+        for (int row = 0; row < SIZE; row++) {
+            for (int col = 0; col < SIZE; col++) {
+                if (board[row][col] == 0) {
+                    emptyTiles.add(new int[]{row, col});
+                }
+            }
+        }
+
+        if (!emptyTiles.isEmpty()) {
+            int[] tile = emptyTiles.get(random.nextInt(emptyTiles.size()));
+            board[tile[0]][tile[1]] = random.nextInt(10) == 0 ? 4 : 2;
+        }
+    }
+
+    private boolean isBoardEqual(int[][] oldBoard) {
+        for (int row = 0; row < SIZE; row++) {
+            for (int col = 0; col < SIZE; col++) {
+                if (board[row][col] != oldBoard[row][col]) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    public boolean isGameOver() {
+        // Check if there are empty tiles
+        for (int row = 0; row < SIZE; row++) {
+            for (int col = 0; col < SIZE; col++) {
+                if (board[row][col] == 0) {
+                    return false;
+                }
+            }
+        }
+
+        // Check if there are possible merges
+        for (int row = 0; row < SIZE; row++) {
+            for (int col = 0; col < SIZE; col++) {
+                if ((row < SIZE - 1 && board[row][col] == board[row + 1][col]) ||
+                    (col < SIZE - 1 && board[row][col] == board[row][col + 1])) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    public int[][] getBoard() {
+        return board;
+    }
+
+    public int getScore() {
+        return score;
+    }
+
+    public boolean isMoved() {
+        return moved;
+    }
+}
+
+package com.example.game2048;
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.KeyAdapter;
+import java.awt.event.KeyEvent;
+
+public class GamePanel extends JPanel {
+    private static final int TILE_SIZE = 100;
+    private static final int PADDING = 10;
+    private static final Color BG_COLOR = new Color(0xbbada0);
+    private static final Color EMPTY_TILE_COLOR = new Color(0xcdc1b4);
+    private static final Color[] TILE_COLORS = {
+            new Color(0xeee4da), // 2
+            new Color(0xede0c8), // 4
+            new Color(0xf2b179), // 8
+            new Color(0xf59563), // 16
+            new Color(0xf67c5f), // 32
+            new Color(0xf65e3b), // 64
+            new Color(0xedcf72), // 128
+            new Color(0xedcc61), // 256
+            new Color(0xedc850), // 512
+            new Color(0xedc53f), // 1024
+            new Color(0xedc22e)  // 2048
+    };
+
+    private GameLogic gameLogic;
+    private Font font;
+
+    public GamePanel() {
+        gameLogic = new GameLogic();
+        font = new Font("Arial", Font.BOLD, 36);
+        setFocusable(true);
+        addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                if (gameLogic.isGameOver()) {
+                    return;
+                }
+
+                switch (e.getKeyCode()) {
+                    case KeyEvent.VK_UP:
+                        gameLogic.move(Direction.UP);
+                        break;
+                    case KeyEvent.VK_DOWN:
+                        gameLogic.move(Direction.DOWN);
+                        break;
+                    case KeyEvent.VK_LEFT:
+                        gameLogic.move(Direction.LEFT);
+                        break;
+                    case KeyEvent.VK_RIGHT:
+                        gameLogic.move(Direction.RIGHT);
+                        break;
+                    default:
+                        return;
+                }
+
+                repaint();
+
+                if (gameLogic.isGameOver()) {
+                    JOptionPane.showMessageDialog(null, "Game Over!\nYour score: " + gameLogic.getScore(), 
+                            "Game Over", JOptionPane.INFORMATION_MESSAGE);
+                }
+            }
+        });
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2d = (Graphics2D) g;
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        // Draw background
+        g2d.setColor(BG_COLOR);
+        g2d.fillRect(0, 0, getWidth(), getHeight());
+
+        // Draw tiles
+        int[][] board = gameLogic.getBoard();
+        for (int row = 0; row < board.length; row++) {
+            for (int col = 0; col < board[row].length; col++) {
+                drawTile(g2d, col, row, board[row][col]);
+            }
+        }
+    }
+
+    private void drawTile(Graphics2D g2d, int col, int row, int value) {
+        int x = col * (TILE_SIZE + PADDING) + PADDING;
+        int y = row * (TILE_SIZE + PADDING) + PADDING;
+
+        // Draw tile background
+        if (value == 0) {
+            g2d.setColor(EMPTY_TILE_COLOR);
+        } else {
+            int colorIndex = (int) (Math.log(value) / Math.log(2)) - 1;
+            colorIndex = Math.min(colorIndex, TILE_COLORS.length - 1);
+            g2d.setColor(TILE_COLORS[colorIndex]);
+        }
+        g2d.fillRoundRect(x, y, TILE_SIZE, TILE_SIZE, 10, 10);
+
+        // Draw tile text
+        if (value != 0) {
+            g2d.setColor(value <= 4 ? Color.BLACK : Color.WHITE);
+            g2d.setFont(font);
+            FontMetrics fm = g2d.getFontMetrics();
+            String text = String.valueOf(value);
+            int textWidth = fm.stringWidth(text);
+            int textHeight = fm.getAscent();
+            g2d.drawString(text, x + (TILE_SIZE - textWidth) / 2, y + (TILE_SIZE + textHeight) / 2);
+        }
+    }
+
+    @Override
+    public Dimension getPreferredSize() {
+        return new Dimension(
+                GameLogic.SIZE * (TILE_SIZE + PADDING) + PADDING,
+                GameLogic.SIZE * (TILE_SIZE + PADDING) + PADDING + 50 // Extra space for score
+        );
+    }
+}
+
+package com.example.game2048;
+
+import javax.swing.*;
+import java.awt.*;
+
+public class Game2048 {
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            JFrame frame = new JFrame("2048 Game");
+            frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+            
+            GamePanel gamePanel = new GamePanel();
+            frame.add(gamePanel);
+            
+            frame.pack();
+            frame.setLocationRelativeTo(null);
+            frame.setVisible(true);
+            
+            // Add score display
+            JLabel scoreLabel = new JLabel("Score: 0", SwingConstants.CENTER);
+            scoreLabel.setFont(new Font("Arial", Font.BOLD, 16));
+            frame.add(scoreLabel, BorderLayout.NORTH);
+            
+            // Update score label when score changes
+            Timer timer = new Timer(100, e -> {
+                GameLogic gameLogic = gamePanel.getGameLogic();
+                if (gameLogic != null) {
+                    scoreLabel.setText("Score: " + gameLogic.getScore());
+                }
+            });
+            timer.start();
+        });
+    }
+}

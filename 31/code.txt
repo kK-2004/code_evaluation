@@ -1,0 +1,90 @@
+import javax.json.Json;
+import javax.json.JsonArrayBuilder;
+import javax.json.JsonObject;
+import javax.json.JsonObjectBuilder;
+import javax.json.JsonWriter;
+import java.io.StringWriter;
+import java.util.Scanner;
+
+public class StoryTreeGenerator {
+
+    public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        System.out.println("请输入剧情梗概：");
+        String plotSummary = scanner.nextLine();
+        scanner.close();
+
+        JsonObject dialogTree = generateDialogTree(plotSummary);
+        String jsonOutput = toJsonString(dialogTree);
+        System.out.println(jsonOutput);
+    }
+
+    private static JsonObject generateDialogTree(String plotSummary) {
+        JsonObjectBuilder rootBuilder = Json.createObjectBuilder();
+        rootBuilder.add("id", 1)
+                .add("text", plotSummary)
+                .add("speaker", "Narrator");
+
+        JsonArrayBuilder choicesBuilder = Json.createArrayBuilder();
+        choicesBuilder.add(Json.createObjectBuilder()
+                .add("text", "选项1")
+                .add("nextId", 2));
+        choicesBuilder.add(Json.createObjectBuilder()
+                .add("text", "选项2")
+                .add("nextId", 3));
+        rootBuilder.add("choices", choicesBuilder);
+
+        JsonObjectBuilder node2Builder = Json.createObjectBuilder();
+        node2Builder.add("id", 2)
+                .add("text", "这是选项1的后续剧情")
+                .add("speaker", "NPC-A")
+                .add("choices", Json.createArrayBuilder()
+                        .add(Json.createObjectBuilder()
+                                .add("text", "继续")
+                                .add("nextId", 4)));
+
+        JsonObjectBuilder node3Builder = Json.createObjectBuilder();
+        node3Builder.add("id", 3)
+                .add("text", "这是选项2的后续剧情")
+                .add("speaker", "NPC-B")
+                .add("choices", Json.createArrayBuilder()
+                        .add(Json.createObjectBuilder()
+                                .add("text", "结束")
+                                .add("nextId", 5)));
+
+        JsonObjectBuilder node4Builder = Json.createObjectBuilder();
+        node4Builder.add("id", 4)
+                .add("text", "剧情继续发展")
+                .add("speaker", "Narrator")
+                .add("choices", Json.createArrayBuilder())
+                .add("ending", true)
+                .add("tag", "GoodEnd");
+
+        JsonObjectBuilder node5Builder = Json.createObjectBuilder();
+        node5Builder.add("id", 5)
+                .add("text", "另一种结局")
+                .add("speaker", "Narrator")
+                .add("choices", Json.createArrayBuilder())
+                .add("ending", true)
+                .add("tag", "BadEnd");
+
+        JsonArrayBuilder nodesBuilder = Json.createArrayBuilder();
+        nodesBuilder.add(rootBuilder.build());
+        nodesBuilder.add(node2Builder.build());
+        nodesBuilder.add(node3Builder.build());
+        nodesBuilder.add(node4Builder.build());
+        nodesBuilder.add(node5Builder.build());
+
+        return Json.createObjectBuilder()
+                .add("nodes", nodesBuilder.build())
+                .build();
+    }
+
+    private static String toJsonString(JsonObject jsonObject) {
+        StringWriter stringWriter = new StringWriter();
+        try (JsonWriter jsonWriter = Json.createWriter(stringWriter)) {
+            jsonWriter.writeObject(jsonObject);
+        }
+        return stringWriter.toString();
+    }
+}

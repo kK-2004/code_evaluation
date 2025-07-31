@@ -1,0 +1,24 @@
+你是一名 Java 代码生成器。
+我会提供一段「实体字段描述」文本，示例如下：
+复制
+实体: com.example.entity.Order
+字段:
+- id Long
+- customerName String 模糊
+- status Integer 精确
+- amount BigDecimal 范围
+- createTime LocalDateTime 时间范围
+请一次性输出一个完整、可直接编译运行的 Java 17 源文件，文件名：JpaDynamicQueryGenerator.java。
+要求：
+仅用 JDK 自带库 + Spring Boot 3.x + Spring Data JPA（spring-boot-starter-data-jpa）依赖；不引入 QueryDSL、MyBatis 等其他框架。
+运行后读取上述文本 → 在指定包下自动生成：
+• 实体类 Order.java（含 @Entity、字段及 @Where/@DateTimeFormat 等必要注解）。
+• 动态查询接口 OrderRepository.java（继承 JpaRepository<Order, Long> 与 JpaSpecificationExecutor<Order>）。
+• 动态查询服务 OrderQueryService.java，提供方法：
+Page<Order> search(OrderCriteria criteria, Pageable pageable)
+其中 OrderCriteria 为自动生成的查询条件 DTO（含字段级动态条件）。
+字段规则：
+• 标记“模糊” → 生成 LIKE %value%。
+• 标记“精确” → 生成 =。
+• 标记“范围” → 生成 BETWEEN min AND max（DTO 提供 minXxx/maxXxx）。
+• 标记“时间范围” → 生成 >= 开始时间 AND < 结束时间+1天。

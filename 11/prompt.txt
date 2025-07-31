@@ -1,0 +1,43 @@
+请按以下要求，根据我给出的 Figma 原型，生成一个 Spring Boot 3.2 + Thymeleaf 的完整后端三层结构代码。
+
+1. 项目骨架
+   ├─ src/main/java/com/example/demo
+   │  ├─ DemoApplication.java
+   │  ├─ controller
+   │  ├─ service
+   │  ├─ repository
+   │  ├─ domain/entity
+   │  ├─ domain/dto
+   │  └─ config
+   ├─ src/main/resources
+   │  ├─ templates      ← Thymeleaf HTML
+   │  ├─ static/css     ← 生成与 Figma 样式对应的 css 文件
+   │  ├─ static/js
+   │  └─ application.yml
+
+2. 输入
+   Figma 原型地址（只读）：https://www.figma.com/file/AbCdEf123456/ProductListPage  
+   原型包含 3 个页面：
+   ① /products          商品列表页（带分页、搜索框、价格区间筛选）  
+   ② /products/{id}     商品详情页（图片轮播、规格选择、加入购物车按钮）  
+   ③ /cart              购物车页（数量修改、删除、结算按钮）
+
+3. 输出要求
+   a. 每个页面对应一个 Controller，返回 ModelAndView 或 String（Thymeleaf 视图名）。  
+   b. Service 层必须写接口 + 实现类；Repository 层用 Spring Data JPA。  
+   c. Entity 字段类型、验证注解、分页参数请根据原型中的输入控件自动生成。  
+   d. 在 templates/ 下生成 .html 文件，使用 Thymeleaf 语法（th:each、th:href、th:object 等）。  
+   e. 生成与原型视觉一致的 style.css；不要求像素级还原，但需保证布局、主色、按钮样式一致。  
+   f. 所有生成的代码以代码块形式输出，第一行写文件路径注释，例如：
+      ```html
+      <!-- src/main/resources/templates/product/list.html -->
+      <!DOCTYPE html>
+      ...
+      ```
+
+4. 额外约定
+   - 统一响应包装类：R<T> { int code; String msg; T data; }  
+   - 全局异常处理：@ControllerAdvice 捕获 BindException、EntityNotFoundException 等。  
+   - application.yml 中配置好 H2 内存数据库、Thymeleaf 缓存关闭、devtools 热部署。  
+
+请直接开始生成。

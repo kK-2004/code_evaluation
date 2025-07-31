@@ -1,0 +1,35 @@
+请一次性生成完整代码，要求如下：
+
+1. 前端：使用 React + Ant Design 5.x + TypeScript 编写一个名为 UserForm 的组件。
+   - 表单字段：
+     - username（必填，3~16 位字母数字）
+     - email（必填，合法邮箱格式）
+     - birthDate（必填，日期选择器）
+     - gender（必填，单选：Male / Female / Other）
+     - address（非必填，文本域）
+   - 表单需实现：
+     - 使用 Form.Item 的 rules 完成字段校验
+     - 提交按钮点击后调用后端接口 POST /api/users
+     - 收到后端返回后使用 message.success / message.error 给用户反馈
+     - 若后端返回 400/422，将后端校验错误映射到对应字段
+   - 使用 axios 发送请求，代码需包含 axios 实例配置（baseURL = http://localhost:8080）
+
+2. 后端：使用 Spring Boot 3.x + Java 17 编写一个 UserController 及对应的 UserCreateDTO。
+   - 接口：POST /api/users
+   - UserCreateDTO 字段与前端完全一致，使用 Jakarta Bean Validation 注解完成校验：
+     - username：@NotBlank + @Size(min=3, max=16) + @Pattern(regexp="[A-Za-z0-9]+")
+     - email：@NotBlank + @Email
+     - birthDate：@NotNull + @Past
+     - gender：@NotNull + 枚举值校验（Gender 枚举：MALE, FEMALE, OTHER）
+     - address：@Size(max=500)
+   - Controller 使用 @Validated 开启校验，校验失败返回 422 + 字段错误列表（格式：Map<String, String>）
+   - 业务逻辑可空实现，返回固定字符串 "User created successfully" 即可
+   - 允许 CORS 来自 http://localhost:3000
+
+3. 输出格式：
+   请按以下 markdown 结构返回，三个代码块分别对应：
+   - ```tsx  // 前端 UserForm.tsx
+   - ```java // 后端 UserCreateDTO.java
+   - ```java // 后端 UserController.java
+
+确保代码可直接复制运行，不要省略 import 语句。

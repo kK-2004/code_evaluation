@@ -1,0 +1,561 @@
+package com.example.orderservice.entity;
+
+import jakarta.persistence.*;
+import lombok.Data;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Data
+@Entity
+@Table(name = "orders")
+public class Order {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
+    private String orderNumber; // 订单编号
+
+    @Column(nullable = false)
+    private String customerName; // 客户名称
+
+    @Column(nullable = false)
+    private String status; // 订单状态: CREATED, PROCESSING, SHIPPED, DELIVERED, CANCELLED
+
+    @Column(nullable = false)
+    private BigDecimal totalAmount; // 订单总金额
+
+    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true)
+    @JoinColumn(name = "order_id")
+    private List<OrderItem> items; // 订单项列表
+
+    @CreationTimestamp
+    private LocalDateTime createdAt; // 创建时间
+
+    @UpdateTimestamp
+    private LocalDateTime updatedAt; // 更新时间
+
+    // 计算订单总金额
+    public void calculateTotalAmount() {
+        this.totalAmount = items.stream()
+                .map(item -> item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+}
+
+package com.example.orderservice.entity;
+
+import jakarta.persistence.*;
+import lombok.Data;
+
+import java.math.BigDecimal;
+
+@Data
+@Entity
+@Table(name = "order_items")
+public class OrderItem {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private Long productId; // 商品ID
+
+    @Column(nullable = false)
+    private String productName; // 商品名称
+
+    @Column(nullable = false)
+    private Integer quantity; // 数量
+
+    @Column(nullable = false)
+    private BigDecimal price; // 单价
+}
+
+package com.example.orderservice.repository;
+
+import com.example.orderservice.entity.Order;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+@Repository
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    Optional<Order> findByOrderNumber(String orderNumber);
+}
+
+package com.example.orderservice.exception;
+
+public class OrderNotFoundException extends RuntimeException {
+    public OrderNotFoundException(Long id) {
+        super("Order not found with id: " + id);
+    }
+    
+    public OrderNotFoundException(String orderNumber) {
+        super("Order not found with order number: " + orderNumber);
+    }
+}
+
+package com.example.orderservice.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(OrderNotFoundException.class)
+    public ResponseEntity<String> handleOrderNotFoundException(OrderNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ex.getMessage());
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<String> handleGeneralException(Exception ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("An error occurred: " + ex.getMessage());
+    }
+}
+
+package com.example.orderservice.service;
+
+import com.example.orderservice.dto.CreateOrderRequest;
+import com.example.orderservice.dto.OrderDto;
+import com.example.orderservice.entity.Order;
+import com.example.orderservice.exception.OrderNotFoundException;
+
+import java.util.List;
+
+public interface OrderService {
+    OrderDto createOrder(CreateOrderRequest request);
+    OrderDto getOrderById(Long id);
+    OrderDto getOrderByOrderNumber(String orderNumber);
+    List<OrderDto> getAllOrders();
+    void deleteOrder(Long id);
+}
+
+package com.example.orderservice.service.impl;
+
+import com.example.orderservice.dto.CreateOrderRequest;
+import com.example.orderservice.dto.OrderDto;
+import com.example.orderservice.entity.Order;
+import com.example.orderservice.exception.OrderNotFoundException;
+import com.example.orderservice.repository.OrderRepository;
+import com.example.orderservice.service.OrderService;
+import lombok.RequiredArgsConstructor;
+import org.modelmapper.ModelMapper;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+@Transactional
+public class OrderServiceImpl implements OrderService {
+
+    private final OrderRepository orderRepository;
+    private final ModelMapper modelMapper;
+
+    @Override
+    public OrderDto createOrder(CreateOrderRequest request) {
+        Order order = new Order();
+        order.setOrderNumber("ORD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
+        order.setCustomerName(request.getCustomerName());
+        order.setStatus("CREATED");
+        
+        // 转换订单项
+        order.setItems(request.getItems().stream()
+                .map(itemRequest -> {
+                    Order.OrderItem item = new Order.OrderItem();
+                    item.setProductId(itemRequest.getProductId());
+                    item.setProductName(itemRequest.getProductName());
+                    item.setQuantity(itemRequest.getQuantity());
+                    item.setPrice(itemRequest.getPrice());
+                    return item;
+                })
+                .collect(Collectors.toList()));
+        
+        // 计算总金额
+        order.calculateTotalAmount();
+        
+        Order savedOrder = orderRepository.save(order);
+        return modelMapper.map(savedOrder, OrderDto.class);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public OrderDto getOrderById(Long id) {
+        Order order = orderRepository.findById(id)
+                .orElseThrow(() -> new OrderNotFoundException(id));
+        return modelMapper.map(order, OrderDto.class);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public OrderDto getOrderByOrderNumber(String orderNumber) {
+        Order order = orderRepository.findByOrderNumber(orderNumber)
+                .orElseThrow(() -> new OrderNotFoundException(orderNumber));
+        return modelMapper.map(order, OrderDto.class);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OrderDto> getAllOrders() {
+        return orderRepository.findAll().stream()
+                .map(order -> modelMapper.map(order, OrderDto.class))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public void deleteOrder(Long id) {
+        if (!orderRepository.existsById(id)) {
+            throw new OrderNotFoundException(id);
+        }
+        orderRepository.deleteById(id);
+    }
+}
+
+package com.example.orderservice.controller;
+
+import com.example.orderservice.dto.CreateOrderRequest;
+import com.example.orderservice.dto.OrderDto;
+import com.example.orderservice.service.OrderService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/orders")
+@RequiredArgsConstructor
+public class OrderController {
+
+    private final OrderService orderService;
+
+    @PostMapping
+    public ResponseEntity<OrderDto> createOrder(@Valid @RequestBody CreateOrderRequest request) {
+        OrderDto createdOrder = orderService.createOrder(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(createdOrder);
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<OrderDto> getOrderById(@PathVariable Long id) {
+        OrderDto order = orderService.getOrderById(id);
+        return ResponseEntity.ok(order);
+    }
+
+    @GetMapping("/number/{orderNumber}")
+    public ResponseEntity<OrderDto> getOrderByOrderNumber(@PathVariable String orderNumber) {
+        OrderDto order = orderService.getOrderByOrderNumber(orderNumber);
+        return ResponseEntity.ok(order);
+    }
+
+    @GetMapping
+    public ResponseEntity<List<OrderDto>> getAllOrders() {
+        List<OrderDto> orders = orderService.getAllOrders();
+        return ResponseEntity.ok(orders);
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteOrder(@PathVariable Long id) {
+        orderService.deleteOrder(id);
+        return ResponseEntity.noContent().build();
+    }
+}
+
+package com.example.orderservice.dto;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+@Data
+public class CreateOrderRequest {
+    @NotBlank(message = "Customer name is required")
+    @Size(max = 100, message = "Customer name must be less than 100 characters")
+    private String customerName;
+
+    @NotNull(message = "Order items are required")
+    @Size(min = 1, message = "Order must have at least one item")
+    private List<OrderItemRequest> items;
+
+    @Data
+    public static class OrderItemRequest {
+        @NotNull(message = "Product ID is required")
+        private Long productId;
+
+        @NotBlank(message = "Product name is required")
+        @Size(max = 100, message = "Product name must be less than 100 characters")
+        private String productName;
+
+        @NotNull(message = "Quantity is required")
+        private Integer quantity;
+
+        @NotNull(message = "Price is required")
+        private BigDecimal price;
+    }
+}
+
+package com.example.orderservice.dto;
+
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Data
+public class OrderDto {
+    private Long id;
+    private String orderNumber;
+    private String customerName;
+    private String status;
+    private BigDecimal totalAmount;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
+    private List<OrderItemDto> items;
+
+    @Data
+    public static class OrderItemDto {
+        private Long id;
+        private Long productId;
+        private String productName;
+        private Integer quantity;
+        private BigDecimal price;
+    }
+}
+
+package com.example.orderservice.config;
+
+import org.modelmapper.ModelMapper;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class AppConfig {
+
+    @Bean
+    public ModelMapper modelMapper() {
+        return new ModelMapper();
+    }
+}
+
+package com.example.orderservice.controller;
+
+import com.example.orderservice.dto.CreateOrderRequest;
+import com.example.orderservice.dto.OrderDto;
+import com.example.orderservice.service.OrderService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+
+import java.math.BigDecimal;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class OrderControllerTest {
+
+    @Mock
+    private OrderService orderService;
+
+    @InjectMocks
+    private OrderController orderController;
+
+    private CreateOrderRequest validRequest;
+    private OrderDto mockOrderDto;
+
+    @BeforeEach
+    void setUp() {
+        validRequest = new CreateOrderRequest();
+        validRequest.setCustomerName("John Doe");
+        
+        CreateOrderRequest.OrderItemRequest item = new CreateOrderRequest.OrderItemRequest();
+        item.setProductId(1L);
+        item.setProductName("Laptop");
+        item.setQuantity(1);
+        item.setPrice(BigDecimal.valueOf(999.99));
+        
+        validRequest.setItems(List.of(item));
+
+        mockOrderDto = new OrderDto();
+        mockOrderDto.setId(1L);
+        mockOrderDto.setOrderNumber("ORD-123456");
+        mockOrderDto.setCustomerName("John Doe");
+        mockOrderDto.setStatus("CREATED");
+        mockOrderDto.setTotalAmount(BigDecimal.valueOf(999.99));
+    }
+
+    @Test
+    void createOrder_shouldReturnCreatedOrder() {
+        when(orderService.createOrder(any(CreateOrderRequest.class))).thenReturn(mockOrderDto);
+
+        ResponseEntity<OrderDto> response = orderController.createOrder(validRequest);
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals("ORD-123456", response.getBody().getOrderNumber());
+        verify(orderService, times(1)).createOrder(validRequest);
+    }
+
+    @Test
+    void getOrderById_shouldReturnOrder() {
+        when(orderService.getOrderById(1L)).thenReturn(mockOrderDto);
+
+        ResponseEntity<OrderDto> response = orderController.getOrderById(1L);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals("John Doe", response.getBody().getCustomerName());
+        verify(orderService, times(1)).getOrderById(1L);
+    }
+
+    @Test
+    void getAllOrders_shouldReturnOrderList() {
+        OrderDto anotherOrder = new OrderDto();
+        anotherOrder.setId(2L);
+        anotherOrder.setOrderNumber("ORD-654321");
+        
+        when(orderService.getAllOrders()).thenReturn(Arrays.asList(mockOrderDto, anotherOrder));
+
+        ResponseEntity<List<OrderDto>> response = orderController.getAllOrders();
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(2, response.getBody().size());
+        verify(orderService, times(1)).getAllOrders();
+    }
+
+    @Test
+    void deleteOrder_shouldReturnNoContent() {
+        doNothing().when(orderService).deleteOrder(1L);
+
+        ResponseEntity<Void> response = orderController.deleteOrder(1L);
+
+        assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+        verify(orderService, times(1)).deleteOrder(1L);
+    }
+}
+
+package com.example.orderservice.controller;
+
+import com.example.orderservice.dto.CreateOrderRequest;
+import com.example.orderservice.dto.OrderDto;
+import com.example.orderservice.repository.OrderRepository;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+import java.math.BigDecimal;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+class OrderControllerIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private OrderRepository orderRepository;
+
+    @Test
+    void createOrder_shouldCreateOrderAndReturnLocation() throws Exception {
+        String requestBody = "{\"customerName\":\"Alice\",\"items\":[{\"productId\":1,\"productName\":\"Book\",\"quantity\":2,\"price\":19.99}]}";
+
+        MvcResult result = mockMvc.perform(post("/api/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        String location = result.getResponse().getHeader("Location");
+        assertNotNull(location);
+        assertTrue(location.contains("/api/orders/"));
+    }
+
+    @Test
+    void getOrder_shouldReturnOrderDetails() throws Exception {
+        // 首先创建一个订单
+        String createRequest = "{\"customerName\":\"Bob\",\"items\":[{\"productId\":2,\"productName\":\"Phone\",\"quantity\":1,\"price\":699.99}]}";
+        
+        MvcResult createResult = mockMvc.perform(post("/api/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest))
+                .andReturn();
+        
+        String location = createResult.getResponse().getHeader("Location");
+        Long orderId = Long.parseLong(location.substring(location.lastIndexOf("/") + 1));
+
+        // 然后查询这个订单
+        mockMvc.perform(get("/api/orders/{id}", orderId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerName").value("Bob"))
+                .andExpect(jsonPath("$.items[0].productName").value("Phone"));
+    }
+
+    @Test
+    void deleteOrder_shouldRemoveOrder() throws Exception {
+        // 创建一个测试订单
+        CreateOrderRequest request = new CreateOrderRequest();
+        request.setCustomerName("Test User");
+        CreateOrderRequest.OrderItemRequest item = new CreateOrderRequest.OrderItemRequest();
+        item.setProductId(3L);
+        item.setProductName("Test Product");
+        item.setQuantity(1);
+        item.setPrice(BigDecimal.TEN);
+        request.setItems(List.of(item));
+
+        OrderDto createdOrder = orderRepository.save(new OrderDto()); // 简化示例，实际需要转换
+
+        // 删除订单
+        mockMvc.perform(delete("/api/orders/{id}", createdOrder.getId()))
+                .andExpect(status().isNoContent());
+
+        // 验证订单已删除
+        mockMvc.perform(get("/api/orders/{id}", createdOrder.getId()))
+                .andExpect(status().isNotFound());
+    }
+}
+package com.example.orderservice;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class OrderServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderServiceApplication.class, args);
+    }
+}

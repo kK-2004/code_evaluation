@@ -1,0 +1,851 @@
+<dependencies>
+    <!-- Spring Boot Starter -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-aop</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.retry</groupId>
+        <artifactId>spring-retry</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Database -->
+    <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+
+    <!-- LangChain4j -->
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-core</artifactId>
+        <version>0.25.0</version>
+    </dependency>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-open-ai</artifactId>
+        <version>0.25.0</version>
+    </dependency>
+
+    <!-- JSON Processing -->
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jsr310</artifactId>
+    </dependency>
+
+    <!-- Testing -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-api</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-core</artifactId>
+        <scope>test</scope>
+    </dependency>
+
+    <!-- Utilities -->
+    <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-lang3</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <scope>provided</scope>
+    </dependency>
+</dependencies>
+
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-maven-plugin</artifactId>
+        </plugin>
+    </plugins>
+</build>
+
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: faq-extraction-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/faq_db
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 30000
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          batch_size: 50
+    open-in-view: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+
+app:
+  gpt:
+    api-key: ${OPENAI_API_KEY:sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}
+    model: gpt-4
+    temperature: 0.0
+    max-tokens: 1000
+    retry:
+      max-attempts: 3
+      backoff:
+        initial-interval: 1000
+        max-interval: 5000
+        multiplier: 2.0
+  embedding:
+    model: text-embedding-ada-002
+  scheduler:
+    enabled: true
+    cron: "0 */30 * * * *"
+  similarity:
+    threshold: 0.92
+
+logging:
+  level:
+    root: INFO
+    com.example.faq: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+-- Chat Records Table
+CREATE TABLE IF NOT EXISTS chat_records (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id VARCHAR(255) NOT NULL,
+    user_message TEXT NOT NULL,
+    assistant_message TEXT NOT NULL,
+    processed BOOLEAN DEFAULT FALSE,
+    processed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_chat_records_unprocessed ON chat_records(processed) WHERE processed = FALSE;
+CREATE INDEX idx_chat_records_conversation ON chat_records(conversation_id);
+
+-- FAQs Table
+CREATE TABLE IF NOT EXISTS faqs (
+    id BIGSERIAL PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    source_chat_id BIGINT REFERENCES chat_records(id),
+    confidence_score DECIMAL(5,4) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(question, answer)
+);
+
+CREATE INDEX idx_faqs_question ON faqs USING gin(to_tsvector('english', question));
+
+-- FAQ Embeddings Table (for similarity search)
+CREATE TABLE IF NOT EXISTS faq_embeddings (
+    id BIGSERIAL PRIMARY KEY,
+    faq_id BIGINT NOT NULL REFERENCES faqs(id) ON DELETE CASCADE,
+    embedding VECTOR(1536) NOT NULL, -- Dimensions for text-embedding-ada-002
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_faq_embeddings ON faq_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+// ChatRecord.java
+package com.example.faq.domain;
+
+import jakarta.persistence.*;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "chat_records")
+public class ChatRecord {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    @Column(name = "conversation_id", nullable = false)
+    private String conversationId;
+    
+    @Column(name = "user_message", nullable = false, columnDefinition = "TEXT")
+    private String userMessage;
+    
+    @Column(name = "assistant_message", nullable = false, columnDefinition = "TEXT")
+    private String assistantMessage;
+    
+    @Column(name = "processed", nullable = false)
+    private boolean processed = false;
+    
+    @Column(name = "processed_at")
+    private LocalDateTime processedAt;
+    
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
+    
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    // Getters and setters (no Lombok as per requirements)
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public String getConversationId() { return conversationId; }
+    public void setConversationId(String conversationId) { this.conversationId = conversationId; }
+    public String getUserMessage() { return userMessage; }
+    public void setUserMessage(String userMessage) { this.userMessage = userMessage; }
+    public String getAssistantMessage() { return assistantMessage; }
+    public void setAssistantMessage(String assistantMessage) { this.assistantMessage = assistantMessage; }
+    public boolean isProcessed() { return processed; }
+    public void setProcessed(boolean processed) { this.processed = processed; }
+    public LocalDateTime getProcessedAt() { return processedAt; }
+    public void setProcessedAt(LocalDateTime processedAt) { this.processedAt = processedAt; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+}
+
+// Faq.java
+package com.example.faq.domain;
+
+import jakarta.persistence.*;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "faqs")
+public class Faq {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    @Column(nullable = false, columnDefinition = "TEXT")
+    private String question;
+    
+    @Column(nullable = false, columnDefinition = "TEXT")
+    private String answer;
+    
+    @Column(name = "source_chat_id")
+    private Long sourceChatId;
+    
+    @Column(name = "confidence_score", nullable = false)
+    private Double confidenceScore;
+    
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
+    
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    // Getters and setters
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public String getQuestion() { return question; }
+    public void setQuestion(String question) { this.question = question; }
+    public String getAnswer() { return answer; }
+    public void setAnswer(String answer) { this.answer = answer; }
+    public Long getSourceChatId() { return sourceChatId; }
+    public void setSourceChatId(Long sourceChatId) { this.sourceChatId = sourceChatId; }
+    public Double getConfidenceScore() { return confidenceScore; }
+    public void setConfidenceScore(Double confidenceScore) { this.confidenceScore = confidenceScore; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+}
+
+// FaqEmbedding.java
+package com.example.faq.domain;
+
+import jakarta.persistence.*;
+import org.hibernate.annotations.Type;
+
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "faq_embeddings")
+public class FaqEmbedding {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    @Column(name = "faq_id", nullable = false)
+    private Long faqId;
+    
+    @Column(nullable = false)
+    @Type(value = dev.langchain4j.store.embedding.Embedding.class)
+    private Embedding embedding;
+    
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
+    
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    // Getters and setters
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public Long getFaqId() { return faqId; }
+    public void setFaqId(Long faqId) { this.faqId = faqId; }
+    public Embedding getEmbedding() { return embedding; }
+    public void setEmbedding(Embedding embedding) { this.embedding = embedding; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+}
+
+// ChatRecordRepository.java
+package com.example.faq.repository;
+
+import com.example.faq.domain.ChatRecord;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+
+public interface ChatRecordRepository extends JpaRepository<ChatRecord, Long> {
+    
+    List<ChatRecord> findByProcessedFalseOrderByCreatedAtAsc();
+    
+    @Modifying
+    @Transactional
+    @Query("UPDATE ChatRecord cr SET cr.processed = true, cr.processedAt = CURRENT_TIMESTAMP WHERE cr.id = :id")
+    void markAsProcessed(Long id);
+}
+
+// FaqRepository.java
+package com.example.faq.repository;
+
+import com.example.faq.domain.Faq;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.Optional;
+
+public interface FaqRepository extends JpaRepository<Faq, Long> {
+    
+    @Query("SELECT f FROM Faq f WHERE f.question = :question AND f.answer = :answer")
+    Optional<Faq> findDuplicate(@Param("question") String question, @Param("answer") String answer);
+}
+
+// FaqEmbeddingRepository.java
+package com.example.faq.repository;
+
+import com.example.faq.domain.FaqEmbedding;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.List;
+
+public interface FaqEmbeddingRepository extends JpaRepository<FaqEmbedding, Long> {
+    
+    @Query(value = "SELECT e.faq_id, 1 - (e.embedding <=> :embedding) as similarity " +
+                   "FROM faq_embeddings e " +
+                   "ORDER BY similarity DESC " +
+                   "LIMIT 10", nativeQuery = true)
+    List<Object[]> findMostSimilarEmbeddings(@Param("embedding") double[] embedding);
+}
+
+// GptClient.java
+package com.example.faq.client;
+
+import com.example.faq.config.GptConfig;
+import com.example.faq.dto.gpt.ExtractionRequest;
+import com.example.faq.dto.gpt.ExtractionResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+
+@Component
+public class GptClient {
+    private static final Logger logger = LoggerFactory.getLogger(GptClient.class);
+    
+    private final ChatLanguageModel chatModel;
+    private final ObjectMapper objectMapper;
+    
+    public GptClient(GptConfig gptConfig, ObjectMapper objectMapper) {
+        this.chatModel = OpenAiChatModel.builder()
+                .apiKey(gptConfig.getApiKey())
+                .modelName(gptConfig.getModel())
+                .temperature(gptConfig.getTemperature())
+                .maxTokens(gptConfig.getMaxTokens())
+                .build();
+        this.objectMapper = objectMapper;
+    }
+    
+    @Retryable(
+            value = {RuntimeException.class},
+            maxAttemptsExpression = "${app.gpt.retry.max-attempts}",
+            backoff = @Backoff(
+                    delayExpression = "${app.gpt.retry.backoff.initial-interval}",
+                    maxDelayExpression = "${app.gpt.retry.backoff.max-interval}",
+                    multiplierExpression = "${app.gpt.retry.backoff.multiplier}"
+            )
+    )
+    public List<ExtractionResponse> extractFaqs(ExtractionRequest request) {
+        String prompt = buildPrompt(request.getMessages());
+        
+        try {
+            AiMessage response = chatModel.sendMessages(
+                    dev.langchain4j.data.message.SystemMessage.from(prompt)
+            );
+            
+            String jsonResponse = response.text();
+            return objectMapper.readValue(jsonResponse, 
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, ExtractionResponse.class));
+        } catch (Exception e) {
+            logger.error("Failed to extract FAQs from GPT: {}", e.getMessage());
+            throw new RuntimeException("GPT extraction failed", e);
+        }
+    }
+    
+    private String buildPrompt(List<ExtractionRequest.ChatMessage> messages) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("You are an expert FAQ extractor. Your task is to analyze the conversation and extract potential FAQs in JSON format.\n\n");
+        sb.append("Conversation History:\n");
+        
+        for (ExtractionRequest.ChatMessage message : messages) {
+            sb.append(message.role()).append(": ").append(message.content()).append("\n");
+        }
+        
+        sb.append("\nExtract all potential FAQ pairs from this conversation. " +
+                "Only include questions that are clearly answered. " +
+                "For each FAQ, provide the question, answer, and a confidence score (0.0-1.0) " +
+                "indicating how certain you are that this is a good FAQ. " +
+                "If no FAQs can be extracted, return an empty array.\n\n");
+        
+        sb.append("Return the result as a JSON array with the following format:\n");
+        sb.append("[{\"question\": \"...\", \"answer\": \"...\", \"confidence\": 0.95}, ...]\n\n");
+        
+        return sb.toString();
+    }
+}
+
+// EmbeddingService.java
+package com.example.faq.service;
+
+import com.example.faq.config.GptConfig;
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
+import org.springframework.stereotype.Service;
+
+@Service
+public class EmbeddingService {
+    private static final Logger logger = LoggerFactory.getLogger(EmbeddingService.class);
+    
+    private final EmbeddingModel embeddingModel;
+    
+    public EmbeddingService(GptConfig gptConfig) {
+        this.embeddingModel = OpenAiEmbeddingModel.builder()
+                .apiKey(gptConfig.getApiKey())
+                .modelName(gptConfig.getEmbeddingModel())
+                .build();
+    }
+    
+    @Retryable(
+            value = {RuntimeException.class},
+            maxAttemptsExpression = "${app.gpt.retry.max-attempts}",
+            backoff = @Backoff(
+                    delayExpression = "${app.gpt.retry.backoff.initial-interval}",
+                    maxDelayExpression = "${app.gpt.retry.backoff.max-interval}",
+                    multiplierExpression = "${app.gpt.retry.backoff.multiplier}"
+            )
+    )
+    public Embedding embedText(String text) {
+        try {
+            return embeddingModel.embed(text).content();
+        } catch (Exception e) {
+            logger.error("Failed to generate embedding for text: {}", text, e);
+            throw new RuntimeException("Embedding generation failed", e);
+        }
+    }
+}
+
+// GptExtractionService.java
+package com.example.faq.service;
+
+import com.example.faq.client.GptClient;
+import com.example.faq.domain.ChatRecord;
+import com.example.faq.dto.gpt.ExtractionRequest;
+import com.example.faq.dto.gpt.ExtractionResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Service
+public class GptExtractionService {
+    private static final Logger logger = LoggerFactory.getLogger(GptExtractionService.class);
+    
+    private final GptClient gptClient;
+    
+    public GptExtractionService(GptClient gptClient) {
+        this.gptClient = gptClient;
+    }
+    
+    @Transactional(readOnly = true)
+    public List<ExtractionResponse> extractFaqsFromChatRecords(List<ChatRecord> chatRecords) {
+        if (chatRecords.isEmpty()) {
+            return List.of();
+        }
+        
+        ExtractionRequest request = buildExtractionRequest(chatRecords);
+        return gptClient.extractFaqs(request);
+    }
+    
+    private ExtractionRequest buildExtractionRequest(List<ChatRecord> chatRecords) {
+        List<ExtractionRequest.ChatMessage> messages = chatRecords.stream()
+                .flatMap(record -> {
+                    ExtractionRequest.ChatMessage userMsg = new ExtractionRequest.ChatMessage(
+                            "user", record.getUserMessage());
+                    ExtractionRequest.ChatMessage assistantMsg = new ExtractionRequest.ChatMessage(
+                            "assistant", record.getAssistantMessage());
+                    return List.of(userMsg, assistantMsg).stream();
+                })
+                .collect(Collectors.toList());
+        
+        return new ExtractionRequest(messages);
+    }
+}
+
+// FaqRefreshService.java
+package com.example.faq.service;
+
+import com.example.faq.domain.ChatRecord;
+import com.example.faq.domain.Faq;
+import com.example.faq.domain.FaqEmbedding;
+import com.example.faq.dto.gpt.ExtractionResponse;
+import com.example.faq.repository.ChatRecordRepository;
+import com.example.faq.repository.FaqEmbeddingRepository;
+import com.example.faq.repository.FaqRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Service
+public class FaqRefreshService {
+    private static final Logger logger = LoggerFactory.getLogger(FaqRefreshService.class);
+    
+    private final ChatRecordRepository chatRecordRepository;
+    private final FaqRepository faqRepository;
+    private final FaqEmbeddingRepository faqEmbeddingRepository;
+    private final GptExtractionService gptExtractionService;
+    private final EmbeddingService embeddingService;
+    
+    @Value("${app.similarity.threshold}")
+    private double similarityThreshold;
+    
+    public FaqRefreshService(ChatRecordRepository chatRecordRepository,
+                           FaqRepository faqRepository,
+                           FaqEmbeddingRepository faqEmbeddingRepository,
+                           GptExtractionService gptExtractionService,
+                           EmbeddingService embeddingService) {
+        this.chatRecordRepository = chatRecordRepository;
+        this.faqRepository = faqRepository;
+        this.faqEmbeddingRepository = faqEmbeddingRepository;
+        this.gptExtractionService = gptExtractionService;
+        this.embeddingService = embeddingService;
+    }
+    
+    @Transactional
+    public void refreshFaqs() {
+        logger.info("Starting FAQ refresh process");
+        LocalDateTime startTime = LocalDateTime.now();
+        
+        try {
+            // 1. Get unprocessed chat records
+            List<ChatRecord> unprocessedRecords = chatRecordRepository.findByProcessedFalseOrderByCreatedAtAsc();
+            
+            if (unprocessedRecords.isEmpty()) {
+                logger.info("No unprocessed chat records found");
+                return;
+            }
+            
+            // 2. Extract potential FAQs from chat records
+            List<ExtractionResponse> extractedFaqs = gptExtractionService.extractFaqsFromChatRecords(unprocessedRecords);
+            
+            // 3. Process and save new FAQs
+            int newFaqsCount = 0;
+            for (ExtractionResponse extracted : extractedFaqs) {
+                if (extracted.getConfidence() >= similarityThreshold) {
+                    if (saveFaqIfNotDuplicate(extracted, unprocessedRecords.get(0).getId())) {
+                        newFaqsCount++;
+                    }
+                }
+            }
+            
+            // 4. Mark records as processed
+            unprocessedRecords.forEach(record -> chatRecordRepository.markAsProcessed(record.getId()));
+            
+            logger.info("FAQ refresh completed. Processed {} records, added {} new FAQs in {} ms",
+                    unprocessedRecords.size(), newFaqsCount, 
+                    LocalDateTime.now().getNano() - startTime.getNano());
+        } catch (Exception e) {
+            logger.error("Failed to refresh FAQs", e);
+            throw new RuntimeException("FAQ refresh failed", e);
+        }
+    }
+    
+    @Transactional
+    public boolean saveFaqIfNotDuplicate(ExtractionResponse extracted, Long sourceChatId) {
+        // Check for exact duplicates
+        faqRepository.findDuplicate(extracted.getQuestion(), extracted.getAnswer())
+                .ifPresent(existing -> {
+                    logger.debug("Duplicate FAQ found - question: {}, answer: {}", 
+                            extracted.getQuestion(), extracted.getAnswer());
+                    return false;
+                });
+        
+        // Check for semantic duplicates
+        Embedding newEmbedding = embeddingService.embedText(extracted.getQuestion());
+        List<Object[]> similarEmbeddings = faqEmbeddingRepository.findMostSimilarEmbeddings(newEmbedding.vector());
+        
+        for (Object[] result : similarEmbeddings) {
+            double similarity = (double) result[1];
+            if (similarity > similarityThreshold) {
+                logger.debug("Semantic duplicate found with similarity {}", similarity);
+                return false;
+            }
+        }
+        
+        // Save new FAQ
+        Faq faq = new Faq();
+        faq.setQuestion(extracted.getQuestion());
+        faq.setAnswer(extracted.getAnswer());
+        faq.setSourceChatId(sourceChatId);
+        faq.setConfidenceScore(extracted.getConfidence());
+        faq.setCreatedAt(LocalDateTime.now());
+        faq.setUpdatedAt(LocalDateTime.now());
+        Faq savedFaq = faqRepository.save(faq);
+        
+        // Save embedding
+        FaqEmbedding embedding = new FaqEmbedding();
+        embedding.setFaqId(savedFaq.getId());
+        embedding.setEmbedding(newEmbedding);
+        embedding.setCreatedAt(LocalDateTime.now());
+        embedding.setUpdatedAt(LocalDateTime.now());
+        faqEmbeddingRepository.save(embedding);
+        
+        return true;
+    }
+}
+
+// FaqRefreshScheduler.java
+package com.example.faq.scheduler;
+
+import com.example.faq.service.FaqRefreshService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+@Component
+@ConditionalOnProperty(name = "app.scheduler.enabled", havingValue = "true")
+public class FaqRefreshScheduler {
+    private static final Logger logger = LoggerFactory.getLogger(FaqRefreshScheduler.class);
+    
+    private final FaqRefreshService faqRefreshService;
+    
+    public FaqRefreshScheduler(FaqRefreshService faqRefreshService) {
+        this.faqRefreshService = faqRefreshService;
+    }
+    
+    @Scheduled(cron = "${app.scheduler.cron}")
+    public void scheduledFaqRefresh() {
+        logger.info("Starting scheduled FAQ refresh");
+        try {
+            faqRefreshService.refreshFaqs();
+        } catch (Exception e) {
+            logger.error("Scheduled FAQ refresh failed", e);
+        }
+    }
+}
+
+// FaqController.java
+package com.example.faq.controller;
+
+import com.example.faq.service.FaqRefreshService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/faq")
+public class FaqController {
+    private static final Logger logger = LoggerFactory.getLogger(FaqController.class);
+    
+    private final FaqRefreshService faqRefreshService;
+    
+    public FaqController(FaqRefreshService faqRefreshService) {
+        this.faqRefreshService = faqRefreshService;
+    }
+    
+    @PostMapping("/refresh")
+    public ResponseEntity<Void> refreshFaqs() {
+        logger.info("Manual FAQ refresh requested");
+        try {
+            faqRefreshService.refreshFaqs();
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            logger.error("Manual FAQ refresh failed", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+}
+
+// GptConfig.java
+package com.example.faq.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+@Component
+@ConfigurationProperties(prefix = "app.gpt")
+public class GptConfig {
+    private String apiKey;
+    private String model;
+    private double temperature;
+    private int maxTokens;
+    private Retry retry;
+    
+    // Getters and setters
+    public String getApiKey() { return apiKey; }
+    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+    public String getModel() { return model; }
+    public void setModel(String model) { this.model = model; }
+    public double getTemperature() { return temperature; }
+    public void setTemperature(double temperature) { this.temperature = temperature; }
+    public int getMaxTokens() { return maxTokens; }
+    public void setMaxTokens(int maxTokens) { this.maxTokens = maxTokens; }
+    public Retry getRetry() { return retry; }
+    public void setRetry(Retry retry) { this.retry = retry; }
+    
+    public static class Retry {
+        private int maxAttempts;
+        private Backoff backoff;
+        
+        // Getters and setters
+        public int getMaxAttempts() { return maxAttempts; }
+        public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
+        public Backoff getBackoff() { return backoff; }
+        public void setBackoff(Backoff backoff) { this.backoff = backoff; }
+    }
+    
+    public static class Backoff {
+        private long initialInterval;
+        private long maxInterval;
+        private double multiplier;
+        
+        // Getters and setters
+        public long getInitialInterval() { return initialInterval; }
+        public void setInitialInterval(long initialInterval) { this.initialInterval = initialInterval; }
+        public long getMaxInterval() { return maxInterval; }
+        public void setMaxInterval(long maxInterval) { this.maxInterval = maxInterval; }
+        public double getMultiplier() { return multiplier; }
+        public void setMultiplier(double multiplier) { this.multiplier = multiplier; }
+    }
+}
+
+// ExtractionRequest.java (in dto.gpt package)
+package com.example.faq.dto.gpt;
+
+import java.util.List;
+
+public class ExtractionRequest {
+    private List<ChatMessage> messages;
+    
+    public ExtractionRequest(List<ChatMessage> messages) {
+        this.messages = messages;
+    }
+    
+    public List<ChatMessage> getMessages() { return messages; }
+    public void setMessages(List<ChatMessage> messages) { this.messages = messages; }
+    
+    public static record ChatMessage(String role, String content) {}
+}
+
+// ExtractionResponse.java (in dto.gpt package)
+package com.example.faq.dto.gpt;
+
+public class ExtractionResponse {
+    private String question;
+    private String answer;
+    private double confidence;
+    
+    // Getters and setters
+    public String getQuestion() { return question; }
+    public void setQuestion(String question) { this.question = question; }
+    public String getAnswer() { return answer; }
+    public void setAnswer(String answer) { this.answer = answer; }
+    public double getConfidence() { return confidence; }
+    public void setConfidence(double confidence) { this.confidence = confidence; }
+}

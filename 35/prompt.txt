@@ -1,0 +1,56 @@
+你是一位资深 Java-SpringBoot 架构师。
+请基于 SpringBoot 3.x + Java 17 写出【敏感信息识别与脱敏接口】的全部代码，要求如下：
+背景
+前端调用后端接口上传任意字符串，后端识别其中的敏感信息（手机号、身份证号、银行卡号、邮箱）后，把敏感字段全部替换成“*”，再原样返回给前端。
+需求拆解
+2.1 定义统一的正则策略类 SensitivePatterns，内置：
+- 手机号：大陆 11 位
+- 身份证号：18 位（含 X/x）
+- 银行卡号：14-19 位数字
+- 邮箱：标准 email 格式
+2.2 工具类 DesensitizationUtil，提供静态方法：
+String mask(String input)
+实现思路：
+· 先使用正则找出所有命中片段；
+· 再使用 Matcher.appendReplacement / StringBuffer 进行一次性替换；
+· 不同敏感类型长度不同，按“前 3 后 4 保留，中间全 *”原则脱敏。
+2.3 REST 接口：POST /api/v1/desensitize
+请求体：{"raw": "原始文本"}
+响应体：{"masked": "脱敏后文本"}
+2.4 全局异常拦截：若 raw 为空或 > 10 MB，返回 400 并给出可读 message。
+2.5 单元测试：使用 JUnit5 + Mockito，覆盖：
+· 正常脱敏
+· 无敏感信息
+· 超长文本
+· 边界正则（如 17 位身份证、15 位银行卡）
+输出格式
+3.1 代码结构
+src
+├─ main
+│  ├─ java
+│  │  └─ com.example.desensitize
+│  │      ├─ DesensitizeApplication.java
+│  │      ├─ controller
+│  │      │  └─ DesensitizeController.java
+│  │      ├─ service
+│  │      │  └─ DesensitizeService.java
+│  │      ├─ util
+│  │      │  ├─ SensitivePatterns.java
+│  │      │  └─ DesensitizationUtil.java
+│  │      └─ exception
+│  │          └─ GlobalExceptionHandler.java
+│  └─ resources
+│      └─ application.yml
+└─ test
+└─ java
+└─ …（省略同包结构）
+3.2 每个类完整代码，注释率 ≥ 20%。
+3.3 application.yml 仅暴露 server.port=8080。
+边界与限制
+不使用第三方脱敏库。
+正则必须预编译，保证并发安全。
+时间复杂度 O(n)。
+验收标准
+输入："张三，手机 13800138000，身份证 110101199001011234，卡号 6222021001122334455，邮箱 abc@xyz.com"
+输出："张三，手机 1388000，身份证 11011234，卡号 6222***4455，邮箱 a@x**.com"（或你按规则生成的号长度）
+请一次性给出所有文件源码。

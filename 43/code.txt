@@ -1,0 +1,657 @@
+package com.example.commentservice.entity;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import lombok.Data;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.util.Date;
+
+/**
+ * 评论实体类，映射到数据库中的comments表
+ * 使用JPA注解定义ORM映射关系
+ */
+@Data
+@Entity
+@Table(name = "comments")
+public class Comment {
+    
+    /**
+     * 主键ID，自增
+     */
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    /**
+     * 评论内容，不能为空，最大长度1000字符
+     */
+    @NotBlank(message = "评论内容不能为空")
+    @Size(max = 1000, message = "评论内容不能超过1000个字符")
+    @Column(nullable = false, length = 1000)
+    private String content;
+    
+    /**
+     * 评论者名称，可为空
+     */
+    @Size(max = 50, message = "评论者名称不能超过50个字符")
+    @Column(length = 50)
+    private String author;
+    
+    /**
+     * 关联的资源ID（如文章ID、产品ID等）
+     * 用于区分评论属于哪个资源
+     */
+    @Column(name = "resource_id", nullable = false)
+    private String resourceId;
+    
+    /**
+     * 创建时间，自动设置
+     */
+    @CreationTimestamp
+    @Column(name = "created_at", updatable = false)
+    private Date createdAt;
+    
+    /**
+     * 更新时间，自动更新
+     */
+    @UpdateTimestamp
+    @Column(name = "updated_at")
+    private Date updatedAt;
+    
+    /**
+     * 是否已删除标志（软删除）
+     */
+    @Column(name = "is_deleted", nullable = false)
+    private boolean isDeleted = false;
+}
+
+package com.example.commentservice.repository;
+
+import com.example.commentservice.entity.Comment;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+
+/**
+ * 评论数据访问接口
+ * 继承JpaRepository，自动实现基本的CRUD操作
+ */
+@Repository
+public interface CommentRepository extends JpaRepository<Comment, Long> {
+    
+    /**
+     * 根据资源ID查找评论（不包括已删除的）
+     * @param resourceId 资源ID
+     * @return 评论列表
+     */
+    List<Comment> findByResourceIdAndIsDeletedFalse(String resourceId);
+    
+    /**
+     * 软删除评论（逻辑删除）
+     * @param id 评论ID
+     * @return 更新的记录数
+     */
+    @Modifying
+    @Query("UPDATE Comment c SET c.isDeleted = true WHERE c.id = :id")
+    int softDeleteById(@Param("id") Long id);
+    
+    /**
+     * 检查评论是否存在且未被删除
+     * @param id 评论ID
+     * @return 是否存在
+     */
+    boolean existsByIdAndIsDeletedFalse(Long id);
+}
+
+package com.example.commentservice.service;
+
+import com.example.commentservice.dto.CommentRequest;
+import com.example.commentservice.dto.CommentResponse;
+import com.example.commentservice.entity.Comment;
+import com.example.commentservice.exception.CommentNotFoundException;
+import com.example.commentservice.repository.CommentRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * 评论业务逻辑服务
+ * 处理核心业务逻辑，与数据访问层交互
+ */
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
+public class CommentService {
+    
+    private final CommentRepository commentRepository;
+    
+    /**
+     * 创建新评论
+     * @param request 评论请求DTO
+     * @return 创建的评论响应DTO
+     */
+    @Transactional
+    public CommentResponse createComment(CommentRequest request) {
+        Comment comment = new Comment();
+        comment.setContent(request.getContent());
+        comment.setAuthor(request.getAuthor());
+        comment.setResourceId(request.getResourceId());
+        
+        Comment savedComment = commentRepository.save(comment);
+        return mapToResponse(savedComment);
+    }
+    
+    /**
+     * 根据ID获取评论详情
+     * @param id 评论ID
+     * @return 评论响应DTO
+     * @throws CommentNotFoundException 当评论不存在或已被删除时
+     */
+    public CommentResponse getCommentById(Long id) {
+        Comment comment = commentRepository.findById(id)
+                .filter(c -> !c.isDeleted())
+                .orElseThrow(() -> new CommentNotFoundException("评论不存在或已被删除"));
+        return mapToResponse(comment);
+    }
+    
+    /**
+     * 根据资源ID获取所有评论
+     * @param resourceId 资源ID
+     * @return 评论响应DTO列表
+     */
+    public List<CommentResponse> getCommentsByResourceId(String resourceId) {
+        return commentRepository.findByResourceIdAndIsDeletedFalse(resourceId)
+                .stream()
+                .map(this::mapToResponse)
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * 删除评论（软删除）
+     * @param id 评论ID
+     * @throws CommentNotFoundException 当评论不存在或已被删除时
+     */
+    @Transactional
+    public void deleteComment(Long id) {
+        if (!commentRepository.existsByIdAndIsDeletedFalse(id)) {
+            throw new CommentNotFoundException("评论不存在或已被删除");
+        }
+        commentRepository.softDeleteById(id);
+    }
+    
+    /**
+     * 将Comment实体转换为CommentResponse DTO
+     * @param comment 评论实体
+     * @return 评论响应DTO
+     */
+    private CommentResponse mapToResponse(Comment comment) {
+        CommentResponse response = new CommentResponse();
+        response.setId(comment.getId());
+        response.setContent(comment.getContent());
+        response.setAuthor(comment.getAuthor());
+        response.setResourceId(comment.getResourceId());
+        response.setCreatedAt(comment.getCreatedAt());
+        response.setUpdatedAt(comment.getUpdatedAt());
+        return response;
+    }
+}
+
+package com.example.commentservice.dto;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import lombok.Data;
+
+/**
+ * 创建/更新评论的请求DTO
+ * 用于接收前端传入的评论数据
+ */
+@Data
+public class CommentRequest {
+    
+    @NotBlank(message = "评论内容不能为空")
+    @Size(max = 1000, message = "评论内容不能超过1000个字符")
+    private String content;
+    
+    @Size(max = 50, message = "评论者名称不能超过50个字符")
+    private String author;
+    
+    @NotBlank(message = "资源ID不能为空")
+    private String resourceId;
+}
+
+package com.example.commentservice.dto;
+
+import lombok.Data;
+
+import java.util.Date;
+
+/**
+ * 评论响应DTO
+ * 用于返回给前端的评论数据
+ */
+@Data
+public class CommentResponse {
+    private Long id;
+    private String content;
+    private String author;
+    private String resourceId;
+    private Date createdAt;
+    private Date updatedAt;
+}
+
+package com.example.commentservice.controller;
+
+import com.example.commentservice.dto.CommentRequest;
+import com.example.commentservice.dto.CommentResponse;
+import com.example.commentservice.service.CommentService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+/**
+ * 评论控制器
+ * 处理HTTP请求和响应
+ */
+@RestController
+@RequestMapping("/api/comments")
+@RequiredArgsConstructor
+public class CommentController {
+    
+    private final CommentService commentService;
+    
+    /**
+     * 创建新评论
+     * @param request 评论请求
+     * @return 创建的评论响应
+     */
+    @PostMapping
+    public ResponseEntity<CommentResponse> createComment(@Valid @RequestBody CommentRequest request) {
+        CommentResponse response = commentService.createComment(request);
+        return new ResponseEntity<>(response, HttpStatus.CREATED);
+    }
+    
+    /**
+     * 根据ID获取评论详情
+     * @param id 评论ID
+     * @return 评论响应
+     */
+    @GetMapping("/{id}")
+    public ResponseEntity<CommentResponse> getCommentById(@PathVariable Long id) {
+        CommentResponse response = commentService.getCommentById(id);
+        return ResponseEntity.ok(response);
+    }
+    
+    /**
+     * 根据资源ID获取所有评论
+     * @param resourceId 资源ID
+     * @return 评论响应列表
+     */
+    @GetMapping
+    public ResponseEntity<List<CommentResponse>> getCommentsByResourceId(
+            @RequestParam String resourceId) {
+        List<CommentResponse> responses = commentService.getCommentsByResourceId(resourceId);
+        return ResponseEntity.ok(responses);
+    }
+    
+    /**
+     * 删除评论
+     * @param id 评论ID
+     * @return 无内容响应
+     */
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteComment(@PathVariable Long id) {
+        commentService.deleteComment(id);
+        return ResponseEntity.noContent().build();
+    }
+}
+
+package com.example.commentservice.exception;
+
+/**
+ * 自定义异常：评论不存在
+ */
+public class CommentNotFoundException extends RuntimeException {
+    public CommentNotFoundException(String message) {
+        super(message);
+    }
+}
+
+package com.example.commentservice.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * 全局异常处理器
+ * 统一处理各种异常并返回适当的错误响应
+ */
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+    
+    /**
+     * 处理评论不存在异常
+     */
+    @ExceptionHandler(CommentNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleCommentNotFound(CommentNotFoundException ex) {
+        Map<String, String> errorResponse = new HashMap<>();
+        errorResponse.put("error", "Not Found");
+        errorResponse.put("message", ex.getMessage());
+        return new ResponseEntity<>(errorResponse, HttpStatus.NOT_FOUND);
+    }
+    
+    /**
+     * 处理验证异常（如参数校验失败）
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, String>> handleValidationExceptions(MethodArgumentNotValidException ex) {
+        Map<String, String> errors = new HashMap<>();
+        ex.getBindingResult().getFieldErrors().forEach(error -> 
+            errors.put(error.getField(), error.getDefaultMessage()));
+        
+        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
+    }
+    
+    /**
+     * 处理其他未捕获的异常
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, String>> handleGlobalExceptions(Exception ex) {
+        Map<String, String> errorResponse = new HashMap<>();
+        errorResponse.put("error", "Internal Server Error");
+        errorResponse.put("message", "发生未知错误");
+        return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+}
+
+package com.example.commentservice.config;
+
+import org.modelmapper.ModelMapper;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * 应用配置类
+ * 定义Bean配置
+ */
+@Configuration
+public class AppConfig {
+    
+    /**
+     * 配置ModelMapper Bean
+     * 用于对象之间的属性映射
+     */
+    @Bean
+    public ModelMapper modelMapper() {
+        return new ModelMapper();
+    }
+}
+
+package com.example.commentservice;
+
+import com.example.commentservice.dto.CommentRequest;
+import com.example.commentservice.dto.CommentResponse;
+import com.example.commentservice.entity.Comment;
+import com.example.commentservice.exception.CommentNotFoundException;
+import com.example.commentservice.repository.CommentRepository;
+import com.example.commentservice.service.CommentService;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.Date;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
+/**
+ * 评论服务单元测试
+ * 使用Mockito进行模拟测试
+ */
+@ExtendWith(MockitoExtension.class)
+class CommentServiceTests {
+    
+    @Mock
+    private CommentRepository commentRepository;
+    
+    @InjectMocks
+    private CommentService commentService;
+    
+    @Test
+    void createComment_ShouldReturnCommentResponse() {
+        // 准备测试数据
+        CommentRequest request = new CommentRequest();
+        request.setContent("测试评论");
+        request.setAuthor("测试用户");
+        request.setResourceId("article-123");
+        
+        Comment savedComment = new Comment();
+        savedComment.setId(1L);
+        savedComment.setContent(request.getContent());
+        savedComment.setAuthor(request.getAuthor());
+        savedComment.setResourceId(request.getResourceId());
+        savedComment.setCreatedAt(new Date());
+        savedComment.setUpdatedAt(new Date());
+        
+        // 模拟repository行为
+        when(commentRepository.save(any(Comment.class))).thenReturn(savedComment);
+        
+        // 调用服务方法
+        CommentResponse response = commentService.createComment(request);
+        
+        // 验证结果
+        assertNotNull(response);
+        assertEquals(1L, response.getId());
+        assertEquals("测试评论", response.getContent());
+        assertEquals("测试用户", response.getAuthor());
+        assertEquals("article-123", response.getResourceId());
+        
+        // 验证repository方法被调用
+        verify(commentRepository, times(1)).save(any(Comment.class));
+    }
+    
+    @Test
+    void getCommentById_WhenCommentExists_ShouldReturnComment() {
+        // 准备测试数据
+        Comment comment = new Comment();
+        comment.setId(1L);
+        comment.setContent("存在的评论");
+        comment.setResourceId("article-123");
+        comment.setDeleted(false);
+        
+        // 模拟repository行为
+        when(commentRepository.findById(1L)).thenReturn(Optional.of(comment));
+        
+        // 调用服务方法
+        CommentResponse response = commentService.getCommentById(1L);
+        
+        // 验证结果
+        assertNotNull(response);
+        assertEquals(1L, response.getId());
+        assertEquals("存在的评论", response.getContent());
+        
+        // 验证repository方法被调用
+        verify(commentRepository, times(1)).findById(1L);
+    }
+    
+    @Test
+    void getCommentById_WhenCommentNotExists_ShouldThrowException() {
+        // 模拟repository行为
+        when(commentRepository.findById(anyLong())).thenReturn(Optional.empty());
+        
+        // 验证异常
+        assertThrows(CommentNotFoundException.class, () -> {
+            commentService.getCommentById(999L);
+        });
+        
+        // 验证repository方法被调用
+        verify(commentRepository, times(1)).findById(999L);
+    }
+    
+    @Test
+    void deleteComment_WhenCommentExists_ShouldSoftDelete() {
+        // 模拟repository行为
+        when(commentRepository.existsByIdAndIsDeletedFalse(1L)).thenReturn(true);
+        when(commentRepository.softDeleteById(1L)).thenReturn(1);
+        
+        // 调用服务方法
+        assertDoesNotThrow(() -> commentService.deleteComment(1L));
+        
+        // 验证repository方法被调用
+        verify(commentRepository, times(1)).existsByIdAndIsDeletedFalse(1L);
+        verify(commentRepository, times(1)).softDeleteById(1L);
+    }
+    
+    @Test
+    void deleteComment_WhenCommentNotExists_ShouldThrowException() {
+        // 模拟repository行为
+        when(commentRepository.existsByIdAndIsDeletedFalse(anyLong())).thenReturn(false);
+        
+        // 验证异常
+        assertThrows(CommentNotFoundException.class, () -> {
+            commentService.deleteComment(999L);
+        });
+        
+        // 验证repository方法被调用
+        verify(commentRepository, times(1)).existsByIdAndIsDeletedFalse(999L);
+        verify(commentRepository, never()).softDeleteById(anyLong());
+    }
+}
+
+package com.example.commentservice;
+
+import com.example.commentservice.dto.CommentRequest;
+import com.example.commentservice.entity.Comment;
+import com.example.commentservice.repository.CommentRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+
+import java.util.Date;
+
+import static org.hamcrest.Matchers.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+/**
+ * 评论控制器集成测试
+ * 测试完整的请求处理流程
+ */
+@SpringBootTest
+@AutoConfigureMockMvc
+class CommentControllerIntegrationTests {
+    
+    @Autowired
+    private MockMvc mockMvc;
+    
+    @Autowired
+    private CommentRepository commentRepository;
+    
+    @BeforeEach
+    void setUp() {
+        commentRepository.deleteAll();
+    }
+    
+    @Test
+    void createComment_ShouldReturnCreatedComment() throws Exception {
+        String requestBody = "{\"content\":\"测试评论\",\"author\":\"测试用户\",\"resourceId\":\"article-123\"}";
+        
+        mockMvc.perform(MockMvcRequestBuilders.post("/api/comments")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(requestBody))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id", is(notNullValue())))
+                .andExpect(jsonPath("$.content", is("测试评论")))
+                .andExpect(jsonPath("$.author", is("测试用户")))
+                .andExpect(jsonPath("$.resourceId", is("article-123")));
+    }
+    
+    @Test
+    void getCommentById_WhenCommentExists_ShouldReturnComment() throws Exception {
+        // 准备测试数据
+        Comment comment = new Comment();
+        comment.setContent("存在的评论");
+        comment.setAuthor("测试用户");
+        comment.setResourceId("article-123");
+        Comment savedComment = commentRepository.save(comment);
+        
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/comments/{id}", savedComment.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id", is(savedComment.getId().intValue())))
+                .andExpect(jsonPath("$.content", is("存在的评论")));
+    }
+    
+    @Test
+    void getCommentById_WhenCommentNotExists_ShouldReturnNotFound() throws Exception {
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/comments/999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error", is("Not Found")));
+    }
+    
+    @Test
+    void deleteComment_WhenCommentExists_ShouldReturnNoContent() throws Exception {
+        // 准备测试数据
+        Comment comment = new Comment();
+        comment.setContent("将要删除的评论");
+        comment.setResourceId("article-123");
+        Comment savedComment = commentRepository.save(comment);
+        
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/comments/{id}", savedComment.getId()))
+                .andExpect(status().isNoContent());
+        
+        // 验证评论已被标记为删除
+        Comment deletedComment = commentRepository.findById(savedComment.getId()).orElseThrow();
+        assertTrue(deletedComment.isDeleted());
+    }
+    
+    @Test
+    void deleteComment_WhenCommentNotExists_ShouldReturnNotFound() throws Exception {
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/comments/999"))
+                .andExpect(status().isNotFound());
+    }
+}
+
+package com.example.commentservice;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+/**
+ * 评论服务应用主类
+ * 启动Spring Boot应用
+ */
+@SpringBootApplication
+public class CommentServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(CommentServiceApplication.class, args);
+    }
+}
+

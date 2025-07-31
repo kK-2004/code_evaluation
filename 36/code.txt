@@ -1,0 +1,746 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: word-to-es-vector
+
+es:
+  uris: http://localhost:9200
+  index-name: handbook_chunks
+  connect-timeout: 30s
+  socket-timeout: 30s
+
+onnx:
+  model-path: classpath:models/bge-small-zh-v1.5.onnx
+  thread-num: 4
+  max-batch-size: 32
+  embedding-dim: 512
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+package com.example.handbook;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableAsync;
+
+/**
+ * 主应用类，启动Spring Boot应用
+ */
+@SpringBootApplication
+@EnableAsync
+public class HandbookApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(HandbookApplication.class, args);
+    }
+}
+
+package com.example.handbook;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableAsync;
+
+/**
+ * 主应用类，启动Spring Boot应用
+ */
+@SpringBootApplication
+@EnableAsync
+public class HandbookApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(HandbookApplication.class, args);
+    }
+}
+
+package com.example.handbook.config;
+
+import ai.onnxruntime.OrtEnvironment;
+import ai.onnxruntime.OrtSession;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.ResourceLoader;
+
+import java.io.IOException;
+
+/**
+ * ONNX模型配置
+ */
+@Configuration
+public class OnnxModelConfig {
+
+    @Value("${onnx.model-path}")
+    private Resource modelResource;
+
+    @Value("${onnx.thread-num}")
+    private int threadNum;
+
+    /**
+     * 初始化ONNX运行时环境
+     * @return OrtEnvironment实例
+     */
+    @Bean
+    public OrtEnvironment ortEnvironment() {
+        return OrtEnvironment.getEnvironment();
+    }
+
+    /**
+     * 加载ONNX模型会话
+     * @param env ONNX运行时环境
+     * @return OrtSession实例
+     * @throws IOException 如果模型加载失败
+     */
+    @Bean
+    public OrtSession ortSession(OrtEnvironment env, ResourceLoader resourceLoader) throws IOException {
+        // 设置会话配置
+        OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
+        opts.setIntraOpNumThreads(threadNum);
+        opts.setInterOpNumThreads(threadNum);
+        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT);
+
+        // 加载模型
+        return env.createSession(modelResource.getInputStream(), opts);
+    }
+}
+
+package com.example.handbook.model;
+
+import lombok.Data;
+
+/**
+ * 文档块模型
+ */
+@Data
+public class Chunk {
+    private String id; // 由fileName和chunkIndex组合而成
+    private String fileName; // 源文件名
+    private String title; // 文档标题或章节标题
+    private String chunkText; // 块文本内容
+    private int chunkIndex; // 块在文档中的序号
+    private float[] embedding; // 向量表示
+}
+
+package com.example.handbook.model;
+
+import lombok.Data;
+
+/**
+ * 搜索请求模型
+ */
+@Data
+public class SearchRequest {
+    private String query; // 查询字符串
+    private int topK = 5; // 返回结果数量
+    private float similarityThreshold = 0.5f; // 相似度阈值
+}
+
+package com.example.handbook.model;
+
+import lombok.Data;
+
+import java.util.List;
+
+/**
+ * 搜索结果模型
+ */
+@Data
+public class SearchResult {
+    private String fileName; // 文件名
+    private String title; // 标题
+    private String chunkText; // 文本内容
+    private float score; // 相似度分数
+    private String highlightedText; // 高亮文本
+}
+
+package com.example.handbook.util;
+
+import org.apache.poi.xwpf.usermodel.*;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * DOCX文档解析工具
+ */
+@Component
+public class DocxParser {
+
+    /**
+     * 解析DOCX文件并提取文本块
+     * @param inputStream 输入流
+     * @return 文本块列表
+     * @throws IOException 如果读取失败
+     */
+    public List<String> parseDocx(InputStream inputStream) throws IOException {
+        List<String> chunks = new ArrayList<>();
+        
+        try (XWPFDocument document = new XWPFDocument(inputStream)) {
+            // 提取文档标题（第一个段落）
+            String title = extractTitle(document);
+            
+            // 处理所有段落
+            for (XWPFParagraph paragraph : document.getParagraphs()) {
+                String text = paragraph.getText().trim();
+                if (!text.isEmpty()) {
+                    chunks.add(text);
+                }
+            }
+            
+            // 处理表格（将每个表格单元格内容合并为一个句子）
+            for (XWPFTable table : document.getTables()) {
+                StringBuilder tableText = new StringBuilder();
+                for (XWPFTableRow row : table.getRows()) {
+                    for (XWPFTableCell cell : row.getTableCells()) {
+                        String cellText = cell.getText().trim();
+                        if (!cellText.isEmpty()) {
+                            tableText.append(cellText).append("；"); // 使用中文分号分隔单元格
+                        }
+                    }
+                }
+                if (tableText.length() > 0) {
+                    chunks.add(tableText.toString());
+                }
+            }
+            
+            // 处理图片标题（简化处理，实际中需要更复杂的OCR处理）
+            for (XWPFPictureData picture : document.getAllPictures()) {
+                String description = picture.suggestFileExtension();
+                if (!description.isEmpty()) {
+                    chunks.add("[图片: " + description + "]");
+                }
+            }
+        }
+        
+        return chunks;
+    }
+
+    /**
+     * 提取文档标题（使用第一个非空段落作为标题）
+     * @param document DOCX文档对象
+     * @return 标题文本
+     */
+    private String extractTitle(XWPFDocument document) {
+        for (XWPFParagraph paragraph : document.getParagraphs()) {
+            String text = paragraph.getText().trim();
+            if (!text.isEmpty()) {
+                return text;
+            }
+        }
+        return "无标题";
+    }
+}
+
+package com.example.handbook.util;
+
+import org.springframework.stereotype.Component;
+
+import java.util.Arrays;
+
+/**
+ * 向量工具类
+ */
+@Component
+public class VectorUtils {
+
+    /**
+     * 计算两个向量的余弦相似度
+     * @param vec1 向量1
+     * @param vec2 向量2
+     * @return 余弦相似度
+     */
+    public double cosineSimilarity(float[] vec1, float[] vec2) {
+        if (vec1.length != vec2.length) {
+            throw new IllegalArgumentException("向量维度不匹配");
+        }
+
+        double dotProduct = 0.0;
+        double norm1 = 0.0;
+        double norm2 = 0.0;
+
+        for (int i = 0; i < vec1.length; i++) {
+            dotProduct += vec1[i] * vec2[i];
+            norm1 += Math.pow(vec1[i], 2);
+            norm2 += Math.pow(vec2[i], 2);
+        }
+
+        norm1 = Math.sqrt(norm1);
+        norm2 = Math.sqrt(norm2);
+
+        if (norm1 == 0 || norm2 == 0) {
+            return 0.0;
+        }
+
+        return dotProduct / (norm1 * norm2);
+    }
+
+    /**
+     * 标准化向量（L2归一化）
+     * @param vector 输入向量
+     * @return 归一化后的向量
+     */
+    public float[] normalize(float[] vector) {
+        double norm = 0.0;
+        for (float v : vector) {
+            norm += Math.pow(v, 2);
+        }
+        norm = Math.sqrt(norm);
+
+        if (norm == 0) {
+            return vector;
+        }
+
+        float[] normalized = new float[vector.length];
+        for (int i = 0; i < vector.length; i++) {
+            normalized[i] = (float) (vector[i] / norm);
+        }
+        return normalized;
+    }
+
+    /**
+     * 打印向量（调试用）
+     * @param vector 向量
+     */
+    public void printVector(float[] vector) {
+        System.out.println("Vector (dim=" + vector.length + "): [" + 
+                Arrays.stream(vector)
+                        .limit(10) // 只打印前10个维度避免控制台输出过长
+                        .mapToObj(String::valueOf)
+                        .reduce((a, b) -> a + ", " + b)
+                        .orElse("empty") + 
+                (vector.length > 10 ? ", ...]" : "]"));
+    }
+}
+
+package com.example.handbook.service;
+
+import ai.onnxruntime.*;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.ForkJoinPool;
+
+/**
+ * 文本向量化服务
+ */
+@Service
+public class EmbeddingService {
+
+    private final OrtEnvironment env;
+    private final OrtSession session;
+    private final ForkJoinPool forkJoinPool;
+
+    @Value("${onnx.max-batch-size}")
+    private int maxBatchSize;
+
+    @Value("${onnx.embedding-dim}")
+    private int embeddingDim;
+
+    public EmbeddingService(OrtEnvironment env, OrtSession session) {
+        this.env = env;
+        this.session = session;
+        this.forkJoinPool = new ForkJoinPool(Runtime.getRuntime().availableProcessors());
+    }
+
+    /**
+     * 批量编码文本为向量
+     * @param texts 文本列表
+     * @return 向量列表
+     */
+    public List<float[]> batchEncode(List<String> texts) {
+        // 分批处理防止OOM
+        return forkJoinPool.submit(() -> 
+                texts.parallelStream()
+                        .map(this::encode)
+                        .toList()
+        ).join();
+    }
+
+    /**
+     * 单文本编码为向量
+     * @param text 输入文本
+     * @return 向量
+     */
+    public float[] encode(String text) {
+        try {
+            // 预处理文本：截断或填充到模型最大长度（这里假设模型支持128 tokens）
+            String processedText = preprocessText(text, 128);
+
+            // 创建输入张量
+            long[] shape = {1, 128}; // [batch_size, sequence_length]
+            float[] inputData = new float[128];
+            
+            // 简单实现：将字符转换为ASCII码（实际应该使用tokenizer）
+            // 这里只是示例，实际应该使用模型对应的tokenizer
+            for (int i = 0; i < Math.min(processedText.length(), 128); i++) {
+                inputData[i] = processedText.charAt(i);
+            }
+            
+            // 填充剩余部分（简单实现，实际应该使用模型特定的填充值）
+            for (int i = processedText.length(); i < 128; i++) {
+                inputData[i] = 0f;
+            }
+
+            // 创建ONNX张量
+            OnnxTensor tensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(inputData), shape);
+
+            // 运行模型
+            try (OrtSession.Result results = session.run(Collections.singletonMap("input_ids", tensor))) {
+                // 获取输出
+                OnnxTensor outputTensor = (OnnxTensor) results.get(0);
+                float[][] output = (float[][]) outputTensor.getFloatBuffer().array();
+                
+                // 返回第一个样本的嵌入向量（假设输出形状为[1, embedding_dim]）
+                return output[0];
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("文本向量化失败: " + text, e);
+        }
+    }
+
+    /**
+     * 文本预处理：截断或填充
+     * @param text 原始文本
+     * @param maxLength 最大长度
+     * @return 处理后的文本
+     */
+    private String preprocessText(String text, int maxLength) {
+        // 简单实现：实际应该使用模型对应的tokenizer
+        // 这里只是示例，实际应该使用BERT tokenizer等更复杂的处理
+        if (text.length() > maxLength) {
+            return text.substring(0, maxLength);
+        }
+        return text;
+    }
+}
+
+package com.example.handbook.service;
+
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch.core.BulkRequest;
+import co.elastic.clients.elasticsearch.core.BulkResponse;
+import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
+import com.example.handbook.model.Chunk;
+import com.example.handbook.util.DocxParser;
+import com.example.handbook.util.VectorUtils;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+
+/**
+ * 文档块处理服务
+ */
+@Service
+public class ChunkService {
+
+    private final ElasticsearchClient elasticsearchClient;
+    private final DocxParser docxParser;
+    private final EmbeddingService embeddingService;
+    private final VectorUtils vectorUtils;
+
+    @Value("${es.index-name}")
+    private String indexName;
+
+    public ChunkService(ElasticsearchClient elasticsearchClient, 
+                       DocxParser docxParser, 
+                       EmbeddingService embeddingService,
+                       VectorUtils vectorUtils) {
+        this.elasticsearchClient = elasticsearchClient;
+        this.docxParser = docxParser;
+        this.embeddingService = embeddingService;
+        this.vectorUtils = vectorUtils;
+    }
+
+    /**
+     * 处理上传的DOCX文件
+     * @param file 上传的文件
+     * @return 处理的块数量
+     * @throws IOException 如果处理失败
+     */
+    public int processDocxFile(MultipartFile file) throws IOException {
+        // 1. 解析DOCX文件
+        List<String> chunksText = docxParser.parseDocx(file.getInputStream());
+        String fileName = file.getOriginalFilename();
+        
+        // 2. 分批向量化
+        List<Chunk> chunks = new ArrayList<>();
+        AtomicInteger chunkIndex = new AtomicInteger(0);
+        
+        // 分批处理防止OOM
+        int batchSize = 32;
+        for (int i = 0; i < chunksText.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, chunksText.size());
+            List<String> batch = chunksText.subList(i, end);
+            
+            // 并行向量化
+            List<float[]> embeddings = embeddingService.batchEncode(batch);
+            
+            // 创建Chunk对象
+            for (int j = 0; j < batch.size(); j++) {
+                Chunk chunk = new Chunk();
+                chunk.setId(fileName + "_" + chunkIndex.getAndIncrement());
+                chunk.setFileName(fileName);
+                chunk.setTitle(fileName); // 简化处理，实际可以从文档中提取标题
+                chunk.setChunkText(batch.get(j));
+                chunk.setChunkIndex(chunkIndex.get());
+                chunk.setEmbedding(embeddings.get(j));
+                chunks.add(chunk);
+            }
+        }
+        
+        // 3. 批量索引到ES
+        bulkIndexChunks(chunks);
+        
+        return chunks.size();
+    }
+
+    /**
+     * 批量索引文档块到Elasticsearch
+     * @param chunks 文档块列表
+     * @throws IOException 如果索引失败
+     */
+    private void bulkIndexChunks(List<Chunk> chunks) throws IOException {
+        // 创建批量请求
+        BulkRequest.Builder br = new BulkRequest.Builder();
+        
+        for (Chunk chunk : chunks) {
+            br.operations(op -> op
+                    .index(idx -> idx
+                            .index(indexName)
+                            .id(chunk.getId())
+                            .document(chunk)
+                    )
+            );
+        }
+        
+        // 执行批量请求
+        BulkResponse result = elasticsearchClient.bulk(br.build());
+        
+        // 检查错误
+        if (result.errors()) {
+            List<String> errors = new ArrayList<>();
+            for (BulkResponseItem item : result.items()) {
+                if (item.error() != null) {
+                    errors.add(item.id() + ": " + item.error().reason());
+                }
+            }
+            throw new RuntimeException("批量索引部分失败: " + String.join("; ", errors));
+        }
+    }
+}
+
+package com.example.handbook.service;
+
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.SearchRequest;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
+import co.elastic.clients.elasticsearch.core.search.Hit;
+import com.example.handbook.model.Chunk;
+import com.example.handbook.model.SearchRequest;
+import com.example.handbook.model.SearchResult;
+import com.example.handbook.util.VectorUtils;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * 搜索服务
+ */
+@Service
+public class SearchService {
+
+    private final ElasticsearchClient elasticsearchClient;
+    private final EmbeddingService embeddingService;
+    private final VectorUtils vectorUtils;
+
+    @Value("${es.index-name}")
+    private String indexName;
+
+    public SearchService(ElasticsearchClient elasticsearchClient, 
+                        EmbeddingService embeddingService,
+                        VectorUtils vectorUtils) {
+        this.elasticsearchClient = elasticsearchClient;
+        this.embeddingService = embeddingService;
+        this.vectorUtils = vectorUtils;
+    }
+
+    /**
+     * 执行语义搜索
+     * @param searchRequest 搜索请求
+     * @return 搜索结果列表
+     * @throws IOException 如果搜索失败
+     */
+    public List<SearchResult> semanticSearch(SearchRequest searchRequest) throws IOException {
+        // 1. 将查询文本向量化
+        float[] queryVector = embeddingService.encode(searchRequest.getQuery());
+        
+        // 2. 构建kNN搜索请求
+        SearchResponse<Chunk> response = elasticsearchClient.search(s -> s
+                .index(indexName)
+                .query(q -> q
+                        .scriptScore(ss -> ss
+                                .query(qq -> qq.matchAll(m -> m))
+                                .script(sc -> sc
+                                        .source("cosineSimilarity(params.query_vector, 'embedding') + 1.0")
+                                        .params("query_vector", queryVector)
+                                )
+                        )
+                )
+                .size(searchRequest.getTopK())
+                .minScore(searchRequest.getSimilarityThreshold())
+                .highlight(h -> h
+                        .fields("chunkText", f -> f
+                                .preTags("<em>")
+                                .postTags("</em>")
+                        )
+                )
+        , Chunk.class);
+        
+        // 3. 处理结果
+        return response.hits().hits().stream()
+                .map(this::convertToSearchResult)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 将ES命中结果转换为搜索结果对象
+     * @param hit ES命中结果
+     * @return 搜索结果
+     */
+    private SearchResult convertToSearchResult(Hit<Chunk> hit) {
+        SearchResult result = new SearchResult();
+        Chunk chunk = hit.source();
+        
+        result.setFileName(chunk.getFileName());
+        result.setTitle(chunk.getTitle());
+        result.setChunkText(chunk.getChunkText());
+        result.setScore(hit.score() != null ? hit.score() : 0f);
+        
+        // 处理高亮
+        if (hit.highlight() != null && hit.highlight().containsKey("chunkText")) {
+            result.setHighlightedText(String.join("...", hit.highlight().get("chunkText")));
+        } else {
+            result.setHighlightedText(chunk.getChunkText());
+        }
+        
+        return result;
+    }
+}
+
+package com.example.handbook.controller;
+
+import com.example.handbook.model.SearchRequest;
+import com.example.handbook.model.SearchResult;
+import com.example.handbook.service.ChunkService;
+import com.example.handbook.service.SearchService;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * 手册处理控制器
+ */
+@RestController
+@RequestMapping("/api/handbook")
+public class HandbookController {
+
+    private final ChunkService chunkService;
+    private final SearchService searchService;
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+    public HandbookController(ChunkService chunkService, SearchService searchService) {
+        this.chunkService = chunkService;
+        this.searchService = searchService;
+    }
+
+    /**
+     * 上传DOCX文件并处理
+     * @param file 上传的文件
+     * @return 处理结果
+     */
+    @PostMapping("/upload")
+    public ResponseEntity<String> uploadDocx(@RequestParam("file") MultipartFile file) {
+        if (file.isEmpty()) {
+            return ResponseEntity.badRequest().body("请上传有效的文件");
+        }
+
+        try {
+            int chunkCount = chunkService.processDocxFile(file);
+            return ResponseEntity.ok(String.format("成功处理文件，共生成 %d 个文档块", chunkCount));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body("处理文件时出错: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 语义搜索
+     * @param searchRequest 搜索请求
+     * @return 搜索结果
+     */
+    @PostMapping("/search")
+    public ResponseEntity<List<SearchResult>> search(@RequestBody SearchRequest searchRequest) {
+        try {
+            List<SearchResult> results = searchService.semanticSearch(searchRequest);
+            return ResponseEntity.ok(results);
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(List.of());
+        }
+    }
+
+    /**
+     * 带进度回调的上传（SSE）
+     * @param file 上传的文件
+     * @return SSE发射器
+     */
+    @GetMapping("/upload-progress")
+    public SseEmitter uploadWithProgress(@RequestParam("file") MultipartFile file) {
+        SseEmitter emitter = new SseEmitter();
+        
+        executor.execute(() -> {
+            try {
+                emitter.send(SseEmitter.event().name("progress").data("开始处理文件..."));
+                
+                // 模拟进度
+                for (int i = 0; i <= 100; i += 10) {
+                    Thread.sleep(200);
+                    emitter.send(SseEmitter.event().name("progress").data("处理中: " + i + "%"));
+                }
+                
+                int chunkCount = chunkService.processDocxFile(file);
+                emitter.send(SseEmitter.event().name("complete")
+                        .data(String.format("处理完成，共生成 %d 个文档块", chunkCount)));
+                emitter.complete();
+            } catch (Exception e) {
+                emitter.completeWithError(e);
+            }
+        });
+        
+        return emitter;
+    }
+}

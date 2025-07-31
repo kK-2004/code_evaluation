@@ -1,0 +1,63 @@
+你是一名资深 Java 架构师 + NLP 工程师，请用 Java 17 + Spring Boot 3.x 完成“Word 手册 → Elasticsearch dense_vector”端到端 POC。要求零依赖外部 Python，全部 Java 栈完成解析、向量化、索引、查询。
+功能全景
+1.1 读取任意 .docx 手册（含目录、正文、表格、图片标题），抽取“纯文本段落”作为文档块（chunk）。
+1.2 使用 ONNX 运行时加载中文 SBERT 模型（如 bge-small-zh-v1.5，ONNX 格式），把每个 chunk 转成 512 维 float 向量。
+1.3 自动创建 ES 索引 handbook_chunks，mapping 包含：
+id, fileName, title, chunkText, chunkIndex, embedding(dense_vector dims=512, index=true, similarity=cosine)。
+1.4 提供 REST 接口：
+POST /api/handbook/upload  → 上传 docx → 解析 → 向量化 → 入库。
+POST /api/handbook/search  → 传入 query 字符串 → 向量化 → ES kNN 查询 → 返回 TopN 结果（含高亮片段）。
+1.5 完整异常处理、进度回调（SSE）、幂等去重（fileName+chunkIndex 做 _id）。
+目录结构
+src
+├── main
+│   ├── java
+│   │   └── com.example.handbook
+│   │       ├── HandbookApplication.java
+│   │       ├── config
+│   │       │   ├── ElasticsearchConfig.java
+│   │       │   └── OnnxModelConfig.java
+│   │       ├── controller
+│   │       │   └── HandbookController.java
+│   │       ├── service
+│   │       │   ├── ChunkService.java
+│   │       │   ├── EmbeddingService.java
+│   │       │   └── SearchService.java
+│   │       ├── util
+│   │       │   ├── DocxParser.java
+│   │       │   └── VectorUtils.java
+│   │       └── model
+│   │           └── Chunk.java
+│   └── resources
+│       ├── application.yml
+│       └── models
+│           └── bge-small-zh-v1.5.onnx  (已放置)
+└── test
+└── java
+└── …（JUnit5 + Testcontainers-ES）
+技术约束
+仅 Java 生态：ONNX Runtime Java API + Elasticsearch Java Client 8.x + Apache POI 解析 docx。
+内存控制：向量化分批处理，每批 32 个 chunk，防止 OOM。
+并发：使用 ForkJoinPool 并行 encode。
+兼容性：支持 Windows / macOS / Linux x86_64。
+关键类说明
+DocxParser：提取段落；遇到表格按“行+列标题”拼成一句话；图片 OCR 忽略（占位 TODO）。
+EmbeddingService：
+loadModel() → 启动时加载 ONNX 模型到 Singleton；
+float[] encode(String text) → 截断/填充 128 token，返回 512D 向量；
+ChunkService：解析 → 分块 → 调 EmbeddingService → BulkRequest 入库。
+SearchService：把 query -> vector -> ES kNN 查询 + 高亮。
+配置示例（application.yml）
+server.port: 8080
+es:
+uris: http://localhost:9200
+onnx:
+model-path: classpath:models/bge-small-zh-v1.5.onnx
+thread-num: 4
+单元测试要求
+Testcontainers 启动单节点 ES；
+上传一个 3 页 docx，断言 chunk 数量 ≥ 3；
+查询“安装步骤”，Top1 结果包含“安装”。
+输出
+一次性给出所有 .java 文件 + pom.xml + application.yml + README.md（如何启动 ES、如何 curl 测试）。
+每行代码中文注释 ≥ 20%。

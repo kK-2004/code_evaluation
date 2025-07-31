@@ -1,0 +1,158 @@
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.util.Random;
+
+public class FlappyBird extends JFrame {
+    private GamePanel gamePanel;
+    
+    public FlappyBird() {
+        setTitle("Flappy Bird");
+        setSize(400, 600);
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setLocationRelativeTo(null);
+        setResizable(false);
+        
+        gamePanel = new GamePanel();
+        add(gamePanel);
+        
+        // 添加鼠标点击事件监听
+        addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                gamePanel.birdJump();
+            }
+        });
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            new FlappyBird().setVisible(true);
+        });
+    }
+}
+
+class GamePanel extends JPanel implements ActionListener {
+    private final int BIRD_SIZE = 30;
+    private final int PIPE_WIDTH = 60;
+    private final int GAP = 150;
+    private final int GRAVITY = 1;
+    private final int JUMP_FORCE = -10;
+    
+    private Timer timer;
+    private int birdY;
+    private int velocityY;
+    private int[] pipeX = new int[3];
+    private int[] pipeHeight = new int[3];
+    private int score;
+    private boolean gameOver;
+    private Random random;
+
+    public GamePanel() {
+        setPreferredSize(new Dimension(400, 600));
+        setBackground(Color.CYAN);
+        random = new Random();
+        resetGame();
+        
+        timer = new Timer(20, this);
+        timer.start();
+    }
+
+    private void resetGame() {
+        birdY = 300;
+        velocityY = 0;
+        score = 0;
+        gameOver = false;
+        
+        // 初始化管道位置
+        for (int i = 0; i < 3; i++) {
+            pipeX[i] = 400 + i * 300;
+            pipeHeight[i] = 100 + random.nextInt(300);
+        }
+    }
+
+    public void birdJump() {
+        if (!gameOver) {
+            velocityY = JUMP_FORCE;
+        }
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        
+        // 绘制小鸟
+        g.setColor(Color.ORANGE);
+        g.fillOval(50, birdY, BIRD_SIZE, BIRD_SIZE);
+        
+        // 绘制管道
+        g.setColor(Color.GREEN);
+        for (int i = 0; i < 3; i++) {
+            // 上管道
+            g.fillRect(pipeX[i], 0, PIPE_WIDTH, pipeHeight[i]);
+            // 下管道
+            g.fillRect(pipeX[i], pipeHeight[i] + GAP, PIPE_WIDTH, getHeight() - pipeHeight[i] - GAP);
+        }
+        
+        // 绘制分数
+        g.setColor(Color.WHITE);
+        g.setFont(new Font("Arial", Font.BOLD, 24));
+        g.drawString("Score: " + score, 10, 30);
+        
+        // 游戏结束显示
+        if (gameOver) {
+            g.setColor(Color.RED);
+            g.setFont(new Font("Arial", Font.BOLD, 36));
+            g.drawString("Game Over!", 100, 300);
+            g.drawString("Click to restart", 80, 350);
+        }
+    }
+
+    @Override
+    public void actionPerformed(ActionEvent e) {
+        if (!gameOver) {
+            // 小鸟物理运动
+            velocityY += GRAVITY;
+            birdY += velocityY;
+            
+            // 管道移动
+            for (int i = 0; i < 3; i++) {
+                pipeX[i] -= 2;
+                if (pipeX[i] < -PIPE_WIDTH) {
+                    pipeX[i] = getWidth();
+                    pipeHeight[i] = 100 + random.nextInt(300);
+                    score++;
+                }
+            }
+            
+            // 碰撞检测
+            checkCollision();
+        }
+        repaint();
+    }
+
+    private void checkCollision() {
+        // 边界检测
+        if (birdY > getHeight() - BIRD_SIZE || birdY < 0) {
+            gameOver = true;
+        }
+        
+        // 管道碰撞检测
+        Rectangle birdRect = new Rectangle(50, birdY, BIRD_SIZE, BIRD_SIZE);
+        for (int i = 0; i < 3; i++) {
+            Rectangle upperPipe = new Rectangle(pipeX[i], 0, PIPE_WIDTH, pipeHeight[i]);
+            Rectangle lowerPipe = new Rectangle(pipeX[i], pipeHeight[i] + GAP, PIPE_WIDTH, getHeight());
+            
+            if (birdRect.intersects(upperPipe) || birdRect.intersects(lowerPipe)) {
+                gameOver = true;
+            }
+        }
+    }
+
+    @Override
+    public void mousePressed(MouseEvent e) {
+        if (gameOver) {
+            resetGame();
+        }
+    }
+}

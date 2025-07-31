@@ -1,0 +1,110 @@
+请根据下面这份 Swagger/OpenAPI 3.0 定义，生成一套 Spring Boot 3.2 项目代码，要求：
+
+1. 项目结构：
+   ├─ src/main/java/com/example/demo
+   │  ├─ DemoApplication.java
+   │  ├─ controller
+   │  ├─ service
+   │  ├─ repository
+   │  ├─ domain/entity
+   │  ├─ domain/dto
+   │  ├─ config
+   │  └─ exception
+
+2. 每个字段必须加上对应的 Bean Validation 注解（@NotNull、@Size、@Email…）；  
+   Controller 方法参数使用 @Valid 触发校验。
+
+3. 统一的全局异常处理：
+   - MethodArgumentNotValidException → 400  
+   - ConstraintViolationException → 400  
+   - 业务自定义异常 BusinessException → 4xx/5xx  
+   - 兜底 Exception → 500  
+   返回统一包装对象 R<T> { code, msg, data }
+
+4. 自动生成 Spring Data JPA 的实体与 Repository；  
+   如果字段格式为 date-time，用 java.time.Instant。
+
+5. 在 controller 层保留 Swagger 原注解（@Operation、@Parameter 等），  
+   并在 application.yml 中开启 swagger-ui。
+
+6. 生成的代码全部放在 ```java … ``` 代码块中，文件名作为第一行注释。
+
+下面给出 Swagger：
+
+openapi: 3.0.1
+info:
+  title: User Center
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /users:
+    post:
+      summary: 创建用户
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserDTO'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserVO'
+  /users/{id}:
+    get:
+      summary: 根据 ID 查询用户
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserVO'
+components:
+  schemas:
+    CreateUserDTO:
+      type: object
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 20
+        email:
+          type: string
+          format: email
+        age:
+          type: integer
+          minimum: 1
+          maximum: 120
+      required:
+        - username
+        - email
+        - age
+    UserVO:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        email:
+          type: string
+        age:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time

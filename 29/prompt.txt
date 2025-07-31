@@ -1,0 +1,2 @@
+java实现生成 LibGDX 版 2D 平台跳跃游戏
+并且给出pom

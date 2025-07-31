@@ -1,0 +1,38 @@
+【角色】
+你是一名高级 Java 架构师，熟悉 Spring Boot 3、Spring Data JPA、PostgreSQL、OpenAI GPT-4 API、LangChain4j 以及自然语言处理基础流程。
+
+【目标】
+用 Java 实现一个可独立运行的微服务，功能：  
+1. 以轮询或事件方式读取“聊天记录表”。  
+2. 调用大模型（OpenAI GPT-4）自动抽取“新问题 + 对应答案”并形成 FAQ 对。  
+3. 去重（与现有 FAQ 表比对， cosine > 0.92 视为重复）。  
+4. 将新 FAQ 持久化到 FAQ 表（id, question, answer, source_chat_id, created_at, confidence_score）。  
+5. 对外暴露 REST /faq/refresh 端点：手动触发一次增量抽取。  
+6. 支持异步任务：@Scheduled(cron = "0 */30 * * * *") 每 30 分钟自动执行一次。  
+7. 日志、事务、幂等、异常处理、单元测试全覆盖。  
+
+【输出要求】
+1. Maven 依赖列表（pom.xml 片段）。  
+2. application.yml 关键配置（含 GPT key、线程池、调度开关）。  
+3. ER 图 DDL（chat_records, faqs, faq_embeddings 三张表）。  
+4. 代码层级：controller, service, domain, repository, client(gpt), scheduler, util。  
+5. 关键类：  
+   - ChatRecord, Faq, FaqRepository  
+   - EmbeddingService（调用 text-embedding-ada-002 生成向量）  
+   - GptExtractionService（prompt 工程 + JSON schema 解析）  
+   - FaqRefreshService（去重 + 入库）  
+   - FaqRefreshScheduler  
+6. 提供 prompt 模板字符串（含占位符 {question}, {answer}），让 GPT 以 JSON 返回：  
+   [{"question":"…","answer":"…","confidence":0.95}, …]  
+7. 单元测试：  
+   - 单条聊天记录 → 新 FAQ  
+   - 重复问题 → 不入库  
+   - GPT 返回格式错误 → 异常捕获  
+8. README.md：启动、测试、调参指南。  
+
+【约束】
+- 仅使用 Java 17、Spring Boot 3.x、JPA、PostgreSQL、LangChain4j。  
+- 禁止出现中文注释以外的中文字符串。  
+- 禁止 Lombok；所有日志使用 SLF4J。  
+- 所有外部调用必须带重试（spring-retry @Retryable）。  
+- 响应时间：单次增量抽取 ≤ 5 s（100 条聊天）。  

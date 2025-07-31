@@ -1,0 +1,225 @@
+// user_model.dart
+import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:flutter/foundation.dart';
+ 
+part 'user_model.freezed.dart';
+part 'user_model.g.dart';
+ 
+@freezed
+class UserDTO with _$UserDTO {
+  const factory UserDTO({
+    required int id,
+    required String username,
+    required String email,
+    required DateTime birthday,
+    required List<String> tags,
+    required Gender gender,
+  }) = _UserDTO;
+ 
+  factory UserDTO.fromJson(Map<String, Object?> json) => _$UserDTOFromJson(json);
+}
+ 
+enum Gender { male, female, other }
+ 
+@freezed
+class ApiResponse<T> with _$ApiResponse<T> {
+  const factory ApiResponse.success(T data) = Success;
+  const factory ApiResponse.error(String error) = Error;
+  const factory ApiResponse.loading() = Loading;
+}
+dart
+// user_api.dart
+import 'package:dio/dio.dart';
+import 'package:retrofit/retrofit.dart';
+import 'package:pretty_dio_logger/pretty_dio_logger.dart';
+import 'user_model.dart';
+ 
+part 'user_api.g.dart';
+ 
+@RestApi(baseUrl: "http://localhost:8080")
+abstract class ApiService {
+  factory ApiService(Dio dio, {String baseUrl}) = _ApiService;
+ 
+  static Dio createDio() {
+    final dio = Dio()
+      ..interceptors.add(PrettyDioLogger())
+      ..interceptors.add(InterceptorsWrapper(
+        onError: (e, handler) {
+          if (e.response?.statusCode == 401) {
+            // Handle 401
+          }
+          handler.next(e);
+        },
+      ));
+    return dio;
+  }
+ 
+  @GET("/api/v1/users/{id}")
+  Future<ApiResponse<UserDTO>> getUser(@Path() int id);
+ 
+  @GET("/api/v1/users")
+  Future<ApiResponse<List<UserDTO>>> listUsers(
+    @Query("page") int page,
+    @Query("size") int size,
+  );
+ 
+  @POST("/api/v1/users")
+  Future<ApiResponse<UserDTO>> createUser(@Body() UserDTO dto);
+ 
+  @PUT("/api/v1/users/{id}")
+  Future<ApiResponse<UserDTO>> updateUser(@Path() int id, @Body() UserDTO dto);
+ 
+  @DELETE("/api/v1/users/{id}")
+  Future<ApiResponse<void>> deleteUser(@Path() int id);
+}
+dart
+// user_repository.dart
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:flutter/material.dart';
+import 'user_api.dart';
+import 'user_model.dart';
+ 
+class UserRepository extends StateNotifier<AsyncValue<List<UserDTO>>> {
+  final ApiService apiService;
+  int _currentPage = 0;
+  final Map<int, List<UserDTO>> _cache = {};
+ 
+  UserRepository(this.apiService) : super(const AsyncLoading());
+ 
+  Future<void> loadUsers({bool refresh = false}) async {
+    if (refresh) _currentPage = 0;
+    
+    try {
+      final response = await apiService.listUsers(_currentPage, 10);
+      response.when(
+        success: (data) {
+          state = AsyncData([
+            if (!refresh) ...state.value ?? [],
+            ...data
+          ]);
+          _cache[_currentPage] = data;
+          _currentPage++;
+        },
+        error: (e) => state = AsyncError(e, StackTrace.current),
+        loading: () => state = const AsyncLoading(),
+      );
+    } catch (e) {
+      state = AsyncError(e, StackTrace.current);
+    }
+  }
+ 
+  void invalidateCache() {
+    _cache.clear();
+    _currentPage = 0;
+  }
+}
+ 
+final userRepositoryProvider = StateNotifierProvider<UserRepository, AsyncValue<List<UserDTO>>>((ref) {
+  return UserRepository(ref.watch(apiServiceProvider));
+});
+dart
+// user_list_page.dart
+import 'package:flutter/material.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
+import 'user_repository.dart';
+import 'user_model.dart';
+ 
+class UserListPage extends HookConsumerWidget {
+  const UserListPage({super.key});
+ 
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(userRepositoryProvider);
+    
+    return Scaffold(
+      appBar: AppBar(title: const Text('Users')),
+      body: RefreshIndicator(
+        onRefresh: () => ref.read(userRepositoryProvider.notifier).loadUsers(refresh: true),
+        child: state.when(
+          data: (users) => ListView.separated(
+            itemCount: users.length,
+            itemBuilder: (context, index) {
+              if (index >= users.length - 1) {
+                ref.read(userRepositoryProvider.notifier).loadUsers();
+              }
+              return ListTile(
+                title: Text(users[index].username),
+                onTap: () => Navigator.push(context, 
+                  MaterialPageRoute(builder: (_) => UserDetailPage(user: users[index]))),
+              );
+            },
+            separatorBuilder: (_, __) => const Divider(),
+          ),
+          loading: () => const LinearProgressIndicator(),
+          error: (e, _) => Text(e.toString()),
+        ),
+      ),
+    );
+  }
+}
+ 
+class UserDetailPage extends StatelessWidget {
+  final UserDTO user;
+  const UserDetailPage({super.key, required this.user});
+ 
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(user.username)),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Email: ${user.email}'),
+            Text('Birthday: ${user.birthday.toIso8601String()}'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+dart
+// main.dart
+import 'package:flutter/material.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'user_api.dart';
+import 'user_list_page.dart';
+ 
+void main() {
+  runApp(const ProviderScope(child: MyApp()));
+}
+ 
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+ 
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'User Management',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: const UserListPage(),
+      builder: (context, child) => ErrorBoundary(child: child!),
+    );
+  }
+}
+ 
+class ErrorBoundary extends ConsumerWidget {
+  final Widget child;
+  const ErrorBoundary({super.key, required this.child});
+ 
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.listen<AsyncValue>(userRepositoryProvider, (_, state) {
+      state.when(
+        error: (e, _) => ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.toString()))),
+        orElse: () {},
+      );
+    });
+    return child;
+  }
+}
+ 
+final apiServiceProvider = Provider((ref) => ApiService(ApiService.createDio()));

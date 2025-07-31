@@ -1,0 +1,417 @@
+package com.example.desensitize;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class DesensitizeApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(DesensitizeApplication.class, args);
+    }
+}
+
+package com.example.desensitize.util;
+
+import java.util.regex.Pattern;
+
+/**
+ * 敏感信息正则表达式策略类
+ * 预编译正则表达式，保证线程安全和性能
+ */
+public class SensitivePatterns {
+    // 手机号正则（大陆11位）
+    public static final Pattern PHONE = Pattern.compile("(?<!\\d)(1[3-9]\\d{9})(?!\\d)");
+    
+    // 身份证号正则（18位，最后一位可能是X/x）
+    public static final Pattern ID_CARD = Pattern.compile("(?<!\\d)([1-9]\\d{5}(18|19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[0-9Xx])(?!\\d)");
+    
+    // 银行卡号正则（14-19位数字）
+    public static final Pattern BANK_CARD = Pattern.compile("(?<!\\d)([1-9]\\d{13,18})(?!\\d)");
+    
+    // 邮箱正则（标准email格式）
+    public static final Pattern EMAIL = Pattern.compile("([\\w-]+(\\.[\\w-]+)*@[\\w-]+(\\.[\\w-]+)+)");
+
+    private SensitivePatterns() {
+        // 私有构造方法，防止实例化
+    }
+}
+
+package com.example.desensitize.util;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * 脱敏工具类
+ * 提供静态方法对字符串中的敏感信息进行脱敏处理
+ */
+public class DesensitizationUtil {
+
+    /**
+     * 对输入字符串进行脱敏处理
+     * @param input 原始字符串
+     * @return 脱敏后的字符串
+     */
+    public static String mask(String input) {
+        if (input == null || input.isEmpty()) {
+            return input;
+        }
+
+        // 使用StringBuffer和Matcher进行高效替换
+        StringBuffer result = new StringBuffer();
+        
+        // 处理手机号
+        maskPattern(input, SensitivePatterns.PHONE, result, 3, 4);
+        // 处理身份证号
+        maskPattern(result.toString(), SensitivePatterns.ID_CARD, result, 6, 4);
+        // 处理银行卡号
+        maskPattern(result.toString(), SensitivePatterns.BANK_CARD, result, 4, 4);
+        // 处理邮箱
+        maskEmailPattern(result.toString(), SensitivePatterns.EMAIL, result);
+        
+        return result.toString();
+    }
+
+    /**
+     * 通用脱敏方法
+     * @param input 输入字符串
+     * @param pattern 正则模式
+     * @param result 结果缓冲区
+     * @param prefixLen 保留前缀长度
+     * @param suffixLen 保留后缀长度
+     */
+    private static void maskPattern(String input, Pattern pattern, StringBuffer result, 
+                                   int prefixLen, int suffixLen) {
+        Matcher matcher = pattern.matcher(input);
+        result.setLength(0); // 清空缓冲区
+        
+        while (matcher.find()) {
+            String match = matcher.group();
+            int length = match.length();
+            
+            // 计算需要保留的部分
+            int start = Math.min(prefixLen, length);
+            int end = Math.max(length - suffixLen, start);
+            
+            // 构建脱敏字符串
+            StringBuilder masked = new StringBuilder();
+            masked.append(match.substring(0, start));
+            for (int i = start; i < end; i++) {
+                masked.append('*');
+            }
+            if (end < length) {
+                masked.append(match.substring(end));
+            }
+            
+            // 替换匹配项
+            matcher.appendReplacement(result, masked.toString());
+        }
+        matcher.appendTail(result);
+    }
+
+    /**
+     * 邮箱特殊脱敏方法
+     * @param input 输入字符串
+     * @param pattern 邮箱正则模式
+     * @param result 结果缓冲区
+     */
+    private static void maskEmailPattern(String input, Pattern pattern, StringBuffer result) {
+        Matcher matcher = pattern.matcher(input);
+        result.setLength(0); // 清空缓冲区
+        
+        while (matcher.find()) {
+            String match = matcher.group();
+            int atIndex = match.indexOf('@');
+            
+            // 脱敏用户名部分（保留1个字符）
+            String username = match.substring(0, atIndex);
+            String maskedUsername = username.length() > 1 
+                ? username.charAt(0) + "***" 
+                : username;
+            
+            // 脱敏域名部分（保留首字母和顶级域名）
+            String domain = match.substring(atIndex + 1);
+            String[] domainParts = domain.split("\\.");
+            if (domainParts.length >= 2) {
+                String maskedDomain = domainParts[0].charAt(0) 
+                    + "***." 
+                    + domainParts[domainParts.length - 1];
+                matcher.appendReplacement(result, maskedUsername + "@" + maskedDomain);
+            } else {
+                matcher.appendReplacement(result, maskedUsername + "@***");
+            }
+        }
+        matcher.appendTail(result);
+    }
+}
+
+package com.example.desensitize.service;
+
+import com.example.desensitize.util.DesensitizationUtil;
+import org.springframework.stereotype.Service;
+
+/**
+ * 脱敏服务类
+ */
+@Service
+public class DesensitizeService {
+
+    /**
+     * 对文本进行脱敏处理
+     * @param rawText 原始文本
+     * @return 脱敏后的文本
+     */
+    public String desensitize(String rawText) {
+        return DesensitizationUtil.mask(rawText);
+    }
+}
+
+package com.example.desensitize.controller;
+
+import com.example.desensitize.service.DesensitizeService;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
+
+/**
+ * 脱敏控制器
+ */
+@RestController
+@RequestMapping("/api/v1/desensitize")
+public class DesensitizeController {
+
+    private final DesensitizeService desensitizeService;
+
+    public DesensitizeController(DesensitizeService desensitizeService) {
+        this.desensitizeService = desensitizeService;
+    }
+
+    /**
+     * 脱敏接口
+     * @param request 请求体，包含原始文本
+     * @return 脱敏后的文本
+     */
+    @PostMapping
+    public ResponseEntity<Map<String, String>> desensitize(@RequestBody Map<String, String> request) {
+        String rawText = request.get("raw");
+        if (rawText == null || rawText.isEmpty()) {
+            throw new IllegalArgumentException("原始文本不能为空");
+        }
+        
+        // 简单检查文本大小（10MB限制）
+        if (rawText.length() > 10 * 1024 * 1024) {
+            throw new IllegalArgumentException("文本大小不能超过10MB");
+        }
+
+        String maskedText = desensitizeService.desensitize(rawText);
+        return ResponseEntity.ok(Map.of("masked", maskedText));
+    }
+}
+
+package com.example.desensitize.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.Map;
+
+/**
+ * 全局异常处理器
+ */
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    /**
+     * 处理非法参数异常
+     * @param ex 异常
+     * @return 错误响应
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgumentException(IllegalArgumentException ex) {
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("message", ex.getMessage()));
+    }
+
+    /**
+     * 处理其他未捕获异常
+     * @param ex 异常
+     * @return 错误响应
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, String>> handleException(Exception ex) {
+        return ResponseEntity
+                .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("message", "服务器内部错误"));
+    }
+}
+
+package com.example.desensitize.controller;
+
+import com.example.desensitize.service.DesensitizeService;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class DesensitizeControllerTest {
+
+    @Mock
+    private DesensitizeService desensitizeService;
+
+    @InjectMocks
+    private DesensitizeController desensitizeController;
+
+    @Test
+    void desensitize_ShouldReturnMaskedText_WhenInputIsValid() {
+        // Arrange
+        String rawText = "测试文本";
+        String maskedText = "**文本";
+        when(desensitizeService.desensitize(rawText)).thenReturn(maskedText);
+
+        // Act
+        ResponseEntity<Map<String, String>> response = desensitizeController.desensitize(Map.of("raw", rawText));
+
+        // Assert
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(maskedText, response.getBody().get("masked"));
+        verify(desensitizeService, times(1)).desensitize(rawText);
+    }
+
+    @Test
+    void desensitize_ShouldThrowException_WhenInputIsNull() {
+        // Act & Assert
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> desensitizeController.desensitize(Map.of("raw", null))
+        );
+        assertEquals("原始文本不能为空", exception.getMessage());
+    }
+
+    @Test
+    void desensitize_ShouldThrowException_WhenInputIsEmpty() {
+        // Act & Assert
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> desensitizeController.desensitize(Map.of("raw", ""))
+        );
+        assertEquals("原始文本不能为空", exception.getMessage());
+    }
+
+    @Test
+    void desensitize_ShouldThrowException_WhenInputIsTooLarge() {
+        // Arrange
+        String largeText = "a".repeat(11 * 1024 * 1024); // 11MB
+
+        // Act & Assert
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> desensitizeController.desensitize(Map.of("raw", largeText))
+        );
+        assertEquals("文本大小不能超过10MB", exception.getMessage());
+    }
+}
+
+package com.example.desensitize.util;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class DesensitizationUtilTest {
+
+    @Test
+    void mask_ShouldDesensitizePhoneNumbers() {
+        String input = "我的手机号是13800138000，另一个是18612345678";
+        String expected = "我的手机号是138****8000，另一个是186****5678";
+        String actual = DesensitizationUtil.mask(input);
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    void mask_ShouldDesensitizeIdCards() {
+        String input = "身份证110101199001011234和51010419881111234X";
+        String expected = "身份证110101******1234和510104******234X";
+        String actual = DesensitizationUtil.mask(input);
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    void mask_ShouldDesensitizeBankCards() {
+        String input = "银行卡6222021001122334455和4567890123456789";
+        String expected = "银行卡6222****4455和4567****6789";
+        String actual = DesensitizationUtil.mask(input);
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    void mask_ShouldDesensitizeEmails() {
+        String input = "邮箱abc@xyz.com和test.user@sub.domain.co.uk";
+        String expected = "邮箱a***@x***.com和t***@s***.co.uk";
+        String actual = DesensitizationUtil.mask(input);
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    void mask_ShouldHandleMixedSensitiveInfo() {
+        String input = "张三，手机13800138000，身份证110101199001011234，卡号6222021001122334455，邮箱abc@xyz.com";
+        String expected = "张三，手机138****8000，身份证110101******1234，卡号6222****4455，邮箱a***@x***.com";
+        String actual = DesensitizationUtil.mask(input);
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    void mask_ShouldReturnOriginal_WhenNoSensitiveInfo() {
+        String input = "这是一段普通文本，没有敏感信息";
+        String actual = DesensitizationUtil.mask(input);
+        assertEquals(input, actual);
+    }
+
+    @Test
+    void mask_ShouldHandleEmptyString() {
+        String input = "";
+        String actual = DesensitizationUtil.mask(input);
+        assertEquals(input, actual);
+    }
+
+    @Test
+    void mask_ShouldHandleNullInput() {
+        String actual = DesensitizationUtil.mask(null);
+        assertNull(actual);
+    }
+
+    @Test
+    void mask_ShouldHandleBoundaryCases() {
+        // 测试边界情况：17位身份证（不符合规则，不应脱敏）
+        String input1 = "身份证12345678901234567";
+        String actual1 = DesensitizationUtil.mask(input1);
+        assertEquals(input1, actual1);
+
+        // 测试边界情况：15位银行卡（不符合规则，不应脱敏）
+        String input2 = "银行卡123456789012345";
+        String actual2 = DesensitizationUtil.mask(input2);
+        assertEquals(input2, actual2);
+
+        // 测试边界情况：14位银行卡（符合规则，应脱敏）
+        String input3 = "银行卡12345678901234";
+        String expected3 = "银行卡1234****1234";
+        String actual3 = DesensitizationUtil.mask(input3);
+        assertEquals(expected3, actual3);
+    }
+}
+

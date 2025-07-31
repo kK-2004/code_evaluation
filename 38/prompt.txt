@@ -1,0 +1,12 @@
+生成一个基于Spring Boot的Java控制器代码，要求如下：
+- 控制器类名为`ProductController`。
+- 包名是`com.example.demo.controller`。
+- 包含以下功能：
+  - 一个`GET`请求方法`getAllProducts`，返回所有产品信息，路径为`/products`。
+  - 一个`POST`请求方法`addProduct`，用于添加新产品，路径为`/products`。
+  - 一个`GET`请求方法`getProductById`，根据产品ID获取产品详情，路径为`/products/{id}`。
+- 使用`@RestController`注解。
+- 使用`@RequestMapping`注解指定基础路径。
+- 方法返回类型为`ResponseEntity<?>`。
+- 假设产品数据存储在内存中，使用一个`List<Product>`来模拟。
+- 产品类`Product`包含字段`id`（整型）、`name`（字符串）和`price`（浮点型）。

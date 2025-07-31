@@ -1,0 +1,37 @@
+【角色】
+你是 Spring Cloud 资深架构师，熟悉 OpenFeign、JUnit5、WireMock、Spring-Boot Test。
+
+【任务】
+1. 读取下方「接口源码」里的 Spring-MVC 控制器（或 OpenAPI/Swagger 文档）。
+2. 生成对应的 OpenFeign Client 接口（Java）。
+   - 包名：com.xxx.infra.feign
+   - 类名：{ControllerName}Client
+   - 使用 @FeignClient(name = "xxx-service") 注解
+   - 方法签名需与源码 100% 对齐（包括 @PathVariable、@RequestParam、@RequestHeader、@RequestBody 等）
+   - 所有 DTO 统一放在 com.xxx.infra.feign.dto 包下，需带 Lombok @Data
+3. 生成单元测试 Stub：
+   - 基于 WireMock 的 json stub 文件（mapping + response），放在 src/test/resources/wiremock/__files 和 mappings 目录下。
+   - 同时生成一个 JUnit5 测试类 {ControllerName}ClientTest，演示如何用 @SpringBootTest + @AutoConfigureWireMock 调用并断言。
+4. 所有代码需符合 Java 17 语法，且无任何日志/异常硬编码，给出详细注释。
+5. 在 Markdown 代码块里分别给出：
+   - FeignClient 接口
+   - DTO
+   - WireMock stub json
+   - JUnit5 测试类
+
+【接口源码】
+package com.order.api;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/v1/orders")
+public interface OrderApi {
+
+    @PostMapping
+    OrderDto create(@RequestBody CreateOrderRequest req,
+                    @RequestHeader("x-tenant-id") String tenantId);
+
+    @GetMapping("/{id}")
+    OrderDto get(@PathVariable Long id);
+}

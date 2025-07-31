@@ -1,0 +1,403 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>typer-demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>typer-demo</name>
+    <description>WebSocket Typer Demo</description>
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+
+package com.example.typer;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class TyperApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(TyperApplication.class, args);
+    }
+}
+
+package com.example.typer.config;
+
+import com.example.typer.handler.TyperWebSocketHandler;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.reactive.HandlerMapping;
+import org.springframework.web.reactive.handler.SimpleUrlHandlerMapping;
+import org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+public class WebSocketConfig {
+
+    @Bean
+    public HandlerMapping handlerMapping(TyperWebSocketHandler typerWebSocketHandler) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("/ws/typer", typerWebSocketHandler);
+
+        SimpleUrlHandlerMapping mapping = new SimpleUrlHandlerMapping();
+        mapping.setOrder(1);
+        mapping.setUrlMap(map);
+        return mapping;
+    }
+
+    @Bean
+    public WebSocketHandlerAdapter handlerAdapter() {
+        return new WebSocketHandlerAdapter();
+    }
+}
+
+package com.example.typer.handler;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.reactive.socket.WebSocketHandler;
+import org.springframework.web.reactive.socket.WebSocketMessage;
+import org.springframework.web.reactive.socket.WebSocketSession;
+import reactor.core.Disposable;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
+
+import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class TyperWebSocketHandler implements WebSocketHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(TyperWebSocketHandler.class);
+
+    // 要发送的文本内容
+    private static final String TEXT_TO_TYPE = "Hello, this is a typewriter effect simulation using WebSocket. " +
+            "Each character is streamed to the client with a small delay to simulate typing. " +
+            "The server also sends periodic pings to check the connection health. " +
+            "When you close the browser tab, the server will immediately clean up resources. " +
+            "You can adjust the typing speed and heartbeat interval in the application.yml file.";
+
+    // 存储所有活跃会话
+    private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+
+    // 打字间隔时间(ms)
+    @Value("${typer.typing-interval:120}")
+    private long typingInterval;
+
+    // 心跳间隔时间(ms)
+    @Value("${typer.heartbeat-interval:30000}")
+    private long heartbeatInterval;
+
+    @Override
+    public Mono<Void> handle(WebSocketSession session) {
+        // 将会话添加到存储
+        sessions.put(session.getId(), session);
+        AtomicBoolean closed = new AtomicBoolean(false);
+
+        // 创建处理管道
+        Mono<Void> input = session.receive()
+                .doOnNext(message -> {
+                    // 处理客户端消息
+                    String payload = message.getPayloadAsText();
+                    if ("pong".equals(payload)) {
+                        log.debug("Received pong from session {}", session.getId());
+                    }
+                })
+                .doOnComplete(() -> {
+                    log.info("Session {} completed", session.getId());
+                    closed.set(true);
+                    cleanupSession(session.getId());
+                })
+                .doOnError(ex -> {
+                    log.error("Session {} error", session.getId(), ex);
+                    closed.set(true);
+                    cleanupSession(session.getId());
+                })
+                .then();
+
+        Mono<Void> output = sendTypingEffect(session)
+                .doOnError(ex -> {
+                    log.error("Error in output for session {}", session.getId(), ex);
+                    closed.set(true);
+                })
+                .then();
+
+        // 启动心跳
+        Disposable heartbeatDisposable = startHeartbeat(session);
+
+        return Mono.zip(input, output)
+                .doFinally(signal -> {
+                    if (!closed.get()) {
+                        cleanupSession(session.getId());
+                    }
+                    heartbeatDisposable.dispose();
+                })
+                .then();
+    }
+
+    // 发送打字机效果
+    private Mono<Void> sendTypingEffect(WebSocketSession session) {
+        Sinks.Many<Character> characterSink = Sinks.many().unicast().onBackpressureBuffer();
+
+        // 创建字符流
+        Mono<Void> characterStream = Mono.fromRunnable(() -> {
+            for (char c : TEXT_TO_TYPE.toCharArray()) {
+                characterSink.tryEmitNext(c);
+                try {
+                    Thread.sleep(typingInterval);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            characterSink.tryEmitComplete();
+        });
+
+        // 启动字符流生产者
+        characterStream.subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()).subscribe();
+
+        // 消费字符流并发送给客户端
+        return characterSink.asFlux()
+                .map(c -> "data: " + c + "\n\n")
+                .map(session::textMessage)
+                .concatMap(message -> session.send(Mono.just(message))
+                        .doOnError(ex -> log.error("Failed to send message to session {}", session.getId(), ex)))
+                .then();
+    }
+
+    // 启动心跳
+    private Disposable startHeartbeat(WebSocketSession session) {
+        return reactor.core.scheduler.Schedulers
+                .newBoundedElastic(1, 1, "heartbeat-scheduler")
+                .schedulePeriodically(
+                        () -> {
+                            if (session.isOpen()) {
+                                session.send(Mono.just(session.textMessage("ping")))
+                                        .subscribe(null, ex -> log.error("Failed to send heartbeat", ex));
+                            }
+                        },
+                        heartbeatInterval,
+                        heartbeatInterval,
+                        java.util.concurrent.TimeUnit.MILLISECONDS
+                );
+    }
+
+    // 清理会话
+    private void cleanupSession(String sessionId) {
+        sessions.remove(sessionId);
+        log.info("Cleaned up session {}", sessionId);
+    }
+}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Typer Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        #output {
+            min-height: 200px;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;
+        }
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 16px;
+            background-color: #333;
+            animation: blink 1s step-end infinite;
+            margin-left: 2px;
+        }
+        @keyframes blink {
+            from, to { opacity: 1; }
+            50% { opacity: 0; }
+        }
+        .controls {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Typer Demo</h1>
+    <p>This demo simulates a typewriter effect using WebSocket, with each character streamed from the server.</p>
+    
+    <div class="controls">
+        <button id="connectBtn">Connect</button>
+        <button id="disconnectBtn" disabled>Disconnect</button>
+        <span id="status">Disconnected</span>
+    </div>
+    
+    <div id="output"></div>
+    
+    <script src="script.js"></script>
+</body>
+</html>
+
+document.addEventListener('DOMContentLoaded', () => {
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const statusEl = document.getElementById('status');
+    const outputEl = document.getElementById('output');
+    
+    let socket;
+    let cursorEl = document.createElement('span');
+    cursorEl.className = 'cursor';
+    
+    connectBtn.addEventListener('click', connect);
+    disconnectBtn.addEventListener('click', disconnect);
+    
+    function connect() {
+        // 如果已经有连接，先关闭
+        if (socket) {
+            socket.close();
+        }
+        
+        // 创建新的WebSocket连接
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        socket = new WebSocket(`${protocol}//${host}/ws/typer`);
+        
+        socket.onopen = () => {
+            console.log('WebSocket connection established');
+            statusEl.textContent = 'Connected';
+            statusEl.style.color = 'green';
+            connectBtn.disabled = true;
+            disconnectBtn.disabled = false;
+            outputEl.textContent = '';
+            outputEl.appendChild(cursorEl);
+        };
+        
+        socket.onmessage = (event) => {
+            const data = event.data;
+            
+            // 处理心跳
+            if (data === 'ping') {
+                socket.send('pong');
+                return;
+            }
+            
+            // 处理正常消息 (SSE格式: "data: <char>\n\n")
+            const match = data.match(/^data:\s*(.)\s*$/);
+            if (match && match[1]) {
+                // 移除光标
+                cursorEl.remove();
+                
+                // 添加新字符
+                outputEl.textContent += match[1];
+                
+                // 重新添加光标
+                outputEl.appendChild(cursorEl);
+                
+                // 滚动到底部
+                outputEl.scrollTop = outputEl.scrollHeight;
+            }
+        };
+        
+        socket.onclose = () => {
+            console.log('WebSocket connection closed');
+            statusEl.textContent = 'Disconnected';
+            statusEl.style.color = 'red';
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+            cursorEl.remove();
+        };
+        
+        socket.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            statusEl.textContent = 'Error';
+            statusEl.style.color = 'red';
+        };
+    }
+    
+    function disconnect() {
+        if (socket) {
+            socket.close(1000, 'User initiated disconnect');
+        }
+    }
+    
+    // 页面卸载前关闭连接
+    window.addEventListener('beforeunload', () => {
+        if (socket) {
+            socket.close(1000, 'Page unloading');
+        }
+    });
+});
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+typer:
+  typing-interval: 120  # 打字间隔时间(ms)
+  heartbeat-interval: 30000  # 心跳间隔时间(ms)
+
+logging:
+  level:
+    root: INFO
+    com.example.typer: DEBUG

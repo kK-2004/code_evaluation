@@ -1,0 +1,238 @@
+import React from 'react';
+import { Form, Input, DatePicker, Radio, Button, message, Space } from 'antd';
+import type { RadioChangeEvent } from 'antd';
+import axios from 'axios';
+import dayjs from 'dayjs';
+
+const { TextArea } = Input;
+
+const axiosInstance = axios.create({
+  baseURL: 'http://localhost:8080',
+});
+
+type Gender = 'Male' | 'Female' | 'Other';
+
+const UserForm: React.FC = () => {
+  const [form] = Form.useForm();
+  const [loading, setLoading] = React.useState(false);
+
+  const onFinish = async (values: any) => {
+    setLoading(true);
+    try {
+      const formattedValues = {
+        ...values,
+        birthDate: values.birthDate.format('YYYY-MM-DD'),
+      };
+
+      const response = await axiosInstance.post('/api/users', formattedValues);
+      message.success(response.data || 'User created successfully');
+      form.resetFields();
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        if (error.response?.status === 400 || error.response?.status === 422) {
+          const errors = error.response.data as Record<string, string[]>;
+          Object.entries(errors).forEach(([field, messages]) => {
+            form.setFields([{
+              name: field,
+              errors: messages,
+            }]);
+          });
+        } else {
+          message.error('Failed to create user');
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Form
+      form={form}
+      layout="vertical"
+      onFinish={onFinish}
+      style={{ maxWidth: 600, margin: '0 auto' }}
+    >
+      <Form.Item
+        name="username"
+        label="Username"
+        rules={[
+          { required: true, message: 'Please input your username!' },
+          { min: 3, max: 16, message: 'Username must be between 3 and 16 characters' },
+          { pattern: /^[A-Za-z0-9]+$/, message: 'Username can only contain letters and numbers' },
+        ]}
+      >
+        <Input placeholder="Enter username" />
+      </Form.Item>
+
+      <Form.Item
+        name="email"
+        label="Email"
+        rules={[
+          { required: true, message: 'Please input your email!' },
+          { type: 'email', message: 'Please enter a valid email address' },
+        ]}
+      >
+        <Input placeholder="Enter email" />
+      </Form.Item>
+
+      <Form.Item
+        name="birthDate"
+        label="Birth Date"
+        rules={[{ required: true, message: 'Please select your birth date!' }]}
+      >
+        <DatePicker style={{ width: '100%' }} />
+      </Form.Item>
+
+      <Form.Item
+        name="gender"
+        label="Gender"
+        rules={[{ required: true, message: 'Please select your gender!' }]}
+      >
+        <Radio.Group>
+          <Space direction="vertical">
+            <Radio value="Male">Male</Radio>
+            <Radio value="Female">Female</Radio>
+            <Radio value="Other">Other</Radio>
+          </Space>
+        </Radio.Group>
+      </Form.Item>
+
+      <Form.Item
+        name="address"
+        label="Address"
+        rules={[{ max: 500, message: 'Address must not exceed 500 characters' }]}
+      >
+        <TextArea rows={4} placeholder="Enter address (optional)" />
+      </Form.Item>
+
+      <Form.Item>
+        <Button type="primary" htmlType="submit" loading={loading}>
+          Submit
+        </Button>
+      </Form.Item>
+    </Form>
+  );
+};
+
+export default UserForm;
+
+package com.example.demo.dto;
+
+import com.example.demo.model.Gender;
+import jakarta.validation.constraints.*;
+import java.time.LocalDate;
+
+public class UserCreateDTO {
+    @NotBlank
+    @Size(min = 3, max = 16)
+    @Pattern(regexp = "[A-Za-z0-9]+")
+    private String username;
+
+    @NotBlank
+    @Email
+    private String email;
+
+    @NotNull
+    @Past
+    private LocalDate birthDate;
+
+    @NotNull
+    private Gender gender;
+
+    @Size(max = 500)
+    private String address;
+
+    // Getters and Setters
+    public String getUsername() {
+        return username;
+    }
+
+    public void setUsername(String username) {
+        this.username = username;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+
+    public LocalDate getBirthDate() {
+        return birthDate;
+    }
+
+    public void setBirthDate(LocalDate birthDate) {
+        this.birthDate = birthDate;
+    }
+
+    public Gender getGender() {
+        return gender;
+    }
+
+    public void setGender(Gender gender) {
+        this.gender = gender;
+    }
+
+    public String getAddress() {
+        return address;
+    }
+
+    public void setAddress(String address) {
+        this.address = address;
+    }
+}
+
+package com.example.demo.controller;
+
+import com.example.demo.dto.UserCreateDTO;
+import com.example.demo.model.Gender;
+import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/users")
+@CrossOrigin(origins = "http://localhost:3000")
+@Validated
+public class UserController {
+
+    @PostMapping
+    public ResponseEntity<?> createUser(@RequestBody @Valid UserCreateDTO userCreateDTO) {
+        // In a real application, you would save the user to database here
+        return ResponseEntity.ok("User created successfully");
+    }
+
+    // Exception handler for method argument not valid (422)
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    public ResponseEntity<Map<String, String>> handleValidationExceptions(jakarta.validation.ConstraintViolationException ex) {
+        var errors = ex.getConstraintViolations().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        violation -> violation.getPropertyPath().toString(),
+                        violation -> violation.getMessage()
+                ));
+        return ResponseEntity.unprocessableEntity().body(errors);
+    }
+
+    // Exception handler for method argument not valid (400)
+    @ExceptionHandler(org.springframework.web.bind.MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, String>> handleValidationExceptions(org.springframework.web.bind.MethodArgumentNotValidException ex) {
+        var errors = ex.getBindingResult().getFieldErrors().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        org.springframework.validation.FieldError::getField,
+                        error -> error.getDefaultMessage() != null ? error.getDefaultMessage() : "Invalid value"
+                ));
+        return ResponseEntity.badRequest().body(errors);
+    }
+}
+
+package com.example.demo.model;
+
+public enum Gender {
+    MALE, FEMALE, OTHER
+}

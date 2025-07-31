@@ -1,0 +1,418 @@
+<dependencies>
+    <!-- Spring Boot Starter -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+    
+    <!-- LangChain4J -->
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-core</artifactId>
+        <version>0.27.0</version>
+    </dependency>
+    
+    <!-- Jackson -->
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+    </dependency>
+    
+    <!-- Lombok -->
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <optional>true</optional>
+    </dependency>
+    
+    <!-- Micrometer for Prometheus -->
+    <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    
+    <!-- Test -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>it.ozimov</groupId>
+        <artifactId>embedded-redis</artifactId>
+        <version>0.7.3</version>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+
+spring:
+  redis:
+    host: localhost
+    port: 6379
+    lettuce:
+      pool:
+        enabled: true
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+    timeout: 3000ms
+
+chat:
+  memory:
+    ttl-minutes: 30
+    max-messages: 20
+    key-prefix: "chat:memory:"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus
+  metrics:
+    tags:
+      application: chat-application
+
+package com.example.chat.memory;
+
+import com.example.chat.exception.BusinessException;
+import com.example.chat.model.AiMessage;
+import com.example.chat.model.HumanMessage;
+import com.example.chat.model.SystemMessage;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.data.message.*;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class RedisChatMemoryStore implements ChatMemoryStore {
+
+    private final StringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
+    
+    @Value("${chat.memory.ttl-minutes}")
+    private int ttlMinutes;
+    
+    @Value("${chat.memory.max-messages}")
+    private int maxMessages;
+    
+    @Value("${chat.memory.key-prefix}")
+    private String keyPrefix;
+
+    @Override
+    public List<Message> getMessages(String memoryId) {
+        // STEP: 生成Redis键
+        String key = RedisKeyUtils.generateMemoryKey(keyPrefix, memoryId);
+        
+        try {
+            // STEP: 从Redis获取消息列表
+            String json = redisTemplate.opsForValue().get(key);
+            if (json == null || json.isEmpty()) {
+                return new ArrayList<>();
+            }
+            
+            // STEP: 反序列化消息列表
+            MessageDTO[] messageDTOs = objectMapper.readValue(json, MessageDTO[].class);
+            
+            // STEP: 转换为LangChain4J消息对象
+            List<Message> messages = new ArrayList<>();
+            for (MessageDTO dto : messageDTOs) {
+                switch (dto.type()) {
+                    case SYSTEM -> messages.add(new SystemMessage(dto.content()));
+                    case HUMAN -> messages.add(new HumanMessage(dto.content()));
+                    case AI -> messages.add(new AiMessage(dto.content()));
+                    default -> log.warn("未知消息类型: {}", dto.type());
+                }
+            }
+            
+            // STEP: 刷新TTL
+            refreshTTL(key);
+            
+            return messages;
+        } catch (JsonProcessingException e) {
+            log.error("反序列化消息失败, memoryId: {}", memoryId, e);
+            throw new BusinessException("消息反序列化失败");
+        } catch (Exception e) {
+            log.error("获取消息失败, memoryId: {}", memoryId, e);
+            throw new BusinessException("获取消息历史失败");
+        }
+    }
+
+    @Override
+    public void addMessages(String memoryId, List<Message> newMessages) {
+        Objects.requireNonNull(newMessages, "消息列表不能为空");
+        if (newMessages.isEmpty()) {
+            return;
+        }
+        
+        // STEP: 生成Redis键
+        String key = RedisKeyUtils.generateMemoryKey(keyPrefix, memoryId);
+        
+        try {
+            // STEP: 获取现有消息
+            List<Message> existingMessages = getMessages(memoryId);
+            
+            // STEP: 合并消息并限制最大数量
+            List<Message> allMessages = new ArrayList<>(existingMessages);
+            allMessages.addAll(newMessages);
+            
+            // 限制最大消息数量
+            if (allMessages.size() > maxMessages) {
+                allMessages = allMessages.subList(allMessages.size() - maxMessages, allMessages.size());
+            }
+            
+            // STEP: 序列化为DTO列表
+            List<MessageDTO> messageDTOs = allMessages.stream()
+                    .map(message -> {
+                        String type;
+                        String content = message.text();
+                        
+                        if (message instanceof SystemMessage) {
+                            type = "SYSTEM";
+                        } else if (message instanceof HumanMessage) {
+                            type = "HUMAN";
+                        } else if (message instanceof AiMessage) {
+                            type = "AI";
+                        } else {
+                            type = "UNKNOWN";
+                        }
+                        
+                        return new MessageDTO(type, content);
+                    })
+                    .toList();
+            
+            // STEP: 序列化为JSON并存储到Redis
+            String json = objectMapper.writeValueAsString(messageDTOs);
+            redisTemplate.opsForValue().set(key, json, Duration.ofMinutes(ttlMinutes));
+            
+        } catch (JsonProcessingException e) {
+            log.error("序列化消息失败, memoryId: {}", memoryId, e);
+            throw new BusinessException("消息序列化失败");
+        } catch (Exception e) {
+            log.error("保存消息失败, memoryId: {}", memoryId, e);
+            throw new BusinessException("保存消息历史失败");
+        }
+    }
+
+    @Override
+    public void deleteMessages(String memoryId) {
+        String key = RedisKeyUtils.generateMemoryKey(keyPrefix, memoryId);
+        redisTemplate.delete(key);
+    }
+
+    private void refreshTTL(String key) {
+        try {
+            redisTemplate.expire(key, Duration.ofMinutes(ttlMinutes));
+        } catch (Exception e) {
+            log.error("刷新TTL失败, key: {}", key, e);
+        }
+    }
+}
+
+package com.example.chat.memory;
+
+public class RedisKeyUtils {
+
+    public static String generateMemoryKey(String prefix, String memoryId) {
+        return prefix + memoryId;
+    }
+}
+
+package com.example.chat.memory;
+
+public record MessageDTO(String type, String content) {
+}
+
+package com.example.chat.service;
+
+import com.example.chat.exception.BusinessException;
+import com.example.chat.memory.RedisChatMemoryStore;
+import dev.langchain4j.chain.ConversationalChain;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.HumanMessage;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.store.memory.chat.ChatMemory;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class ChatService {
+
+    private final ChatLanguageModel chatLanguageModel;
+    private final RedisChatMemoryStore chatMemoryStore;
+    private final MetricsService metricsService;
+    
+    @Value("${chat.memory.max-messages}")
+    private int maxMessages;
+
+    public String sendMessage(String userId, String userMessage) {
+        try {
+            // STEP: 创建或获取对话记忆
+            ChatMemory memory = new ChatMemory(userId, chatMemoryStore);
+            
+            // STEP: 创建对话链
+            ConversationalChain chain = ConversationalChain.builder()
+                    .chatLanguageModel(chatLanguageModel)
+                    .chatMemory(memory)
+                    .build();
+            
+            // STEP: 发送消息并获取响应
+            String response = chain.execute(userMessage);
+            
+            // STEP: 记录指标
+            List<dev.langchain4j.data.message.Message> messages = memory.messages();
+            metricsService.recordMessageMetrics(userId, messages.size(), userMessage.length(), response.length());
+            
+            return response;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("处理消息失败, userId: {}, message: {}", userId, userMessage, e);
+            throw new BusinessException("消息处理失败");
+        }
+    }
+}
+
+// SystemMessage.java
+package com.example.chat.model;
+
+import dev.langchain4j.data.message.SystemMessage;
+
+public class SystemMessage extends SystemMessage {
+    public SystemMessage(String text) {
+        super(text);
+    }
+}
+
+// HumanMessage.java
+package com.example.chat.model;
+
+import dev.langchain4j.data.message.HumanMessage;
+
+public class HumanMessage extends HumanMessage {
+    public HumanMessage(String text) {
+        super(text);
+    }
+}
+
+// AiMessage.java
+package com.example.chat.model;
+
+import dev.langchain4j.data.message.AiMessage;
+
+public class AiMessage extends AiMessage {
+    public AiMessage(String text) {
+        super(text);
+    }
+}
+
+package com.example.chat.service;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.stereotype.Service;
+
+@Service
+public class MetricsService {
+
+    private final Counter messageCounter;
+    private final DistributionSummary messageLengthSummary;
+    private final DistributionSummary responseLengthSummary;
+    private final DistributionSummary memorySizeSummary;
+
+    public MetricsService(MeterRegistry meterRegistry) {
+        this.messageCounter = Counter.builder("chat.messages.total")
+                .description("总消息处理数")
+                .register(meterRegistry);
+        
+        this.messageLengthSummary = DistributionSummary.builder("chat.message.length")
+                .description("用户消息长度分布")
+                .register(meterRegistry);
+        
+        this.responseLengthSummary = DistributionSummary.builder("chat.response.length")
+                .description("AI响应长度分布")
+                .register(meterRegistry);
+        
+        this.memorySizeSummary = DistributionSummary.builder("chat.memory.size")
+                .description("对话记忆大小(消息数量)")
+                .register(meterRegistry);
+    }
+
+    public void recordMessageMetrics(String userId, int memorySize, int messageLength, int responseLength) {
+        messageCounter.increment();
+        messageLengthSummary.record(messageLength);
+        responseLengthSummary.record(responseLength);
+        memorySizeSummary.record(memorySize);
+    }
+}
+
+package com.example.chat.exception;
+
+public class BusinessException extends RuntimeException {
+    public BusinessException(String message) {
+        super(message);
+    }
+
+    public BusinessException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+
+// 在RedisChatMemoryStore.addMessages方法中
+List<MessageDTO> messageDTOs = allMessages.stream()
+        .map(message -> {
+            String type;
+            String content = message.text();
+            
+            if (message instanceof SystemMessage) {
+                type = "SYSTEM";
+            } else if (message instanceof HumanMessage) {
+                type = "HUMAN";
+            } else if (message instanceof AiMessage) {
+                type = "AI";
+            } else {
+                type = "UNKNOWN";
+            }
+            
+            return new MessageDTO(type, content);
+        })
+        .toList();
+
+String json = objectMapper.writeValueAsString(messageDTOs);
+
+// 在RedisChatMemoryStore.getMessages方法中
+String json = redisTemplate.opsForValue().get(key);
+MessageDTO[] messageDTOs = objectMapper.readValue(json, MessageDTO[].class);
+
+List<Message> messages = new ArrayList<>();
+for (MessageDTO dto : messageDTOs) {
+    switch (dto.type()) {
+        case "SYSTEM" -> messages.add(new SystemMessage(dto.content()));
+        case "HUMAN" -> messages.add(new HumanMessage(dto.content()));
+        case "AI" -> messages.add(new AiMessage(dto.content()));
+        default -> log.warn("未知消息类型: {}", dto.type());
+    }
+}

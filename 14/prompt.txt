@@ -1,0 +1,81 @@
+背景
+你是一名 Flutter 资深 GDE，同时也是 Spring Boot 后端专家。现在需要让大模型把**任意 Java REST API（Spring Web 或 Jakarta RS）**自动转换成：
+Flutter 业务 Model（freezed + json_annotation）；
+Retrofit 风格 Dio 接口层（retrofit、dio、pretty_dio_logger）；
+Repository + StateNotifier（Riverpod）完成分页、缓存、错误重试；
+示例页面（ConsumerWidget + HookConsumer）展示列表、详情、新增、修改、删除；
+全局错误处理 & Loading 骨架。
+要求：粘贴后端接口即可，零额外配置，flutter run 直接跑，代码需给出详细注释。
+输入格式
+请严格按以下 Markdown 代码块提供：
+接口列表（OpenAPI 3.x YAML / JSON 或直接贴 Controller 代码）；
+若 DTO 嵌套，用 ##文件名分隔 Java 文件。
+示例：
+
+##UserController.java
+@RestController
+@RequestMapping("/api/v1/users")
+public class UserController {
+  @GetMapping("/{id}")
+  public UserDTO getUser(@PathVariable Long id) { … }
+
+  @GetMapping
+  public Page<UserDTO> listUsers(
+        @RequestParam(defaultValue = "0") int page,
+        @RequestParam(defaultValue = "10") int size) { … }
+
+  @PostMapping
+  public UserDTO createUser(@Valid @RequestBody UserDTO dto) { … }
+
+  @PutMapping("/{id}")
+  public UserDTO updateUser(@PathVariable Long id, @Valid @RequestBody UserDTO dto) { … }
+
+  @DeleteMapping("/{id}")
+  public void deleteUser(@PathVariable Long id) { … }
+}
+
+##UserDTO.java
+public record UserDTO(
+    Long id,
+    @NotBlank String username,
+    @Email String email,
+    LocalDate birthday,
+    List<String> tags,
+    Gender gender
+) {
+  public enum Gender { MALE, FEMALE, OTHER }
+}
+输出格式
+一次性给出 5 个文件，文件名作为标题行，禁止任何解释：
+user_model.dart（freezed + json_annotation）
+user_api.dart（retrofit 接口 + Dio 配置）
+user_repository.dart（StateNotifier + 分页 + 缓存）
+user_list_page.dart（列表 + 下拉刷新 + 上拉加载更多）
+main.dart（ProviderScope + 路由 + 全局错误处理 + Loading）
+生成规则
+Model
+Java 字段 → Dart 字段同名，驼峰；
+LocalDate/LocalDateTime → DateTime;
+枚举同名同值；
+空安全、不可变（@freezed）。
+API 层
+baseUrl = "http://localhost:8080"；
+统一拦截器：
+pretty_dio_logger 打印；
+InterceptorsWrapper 处理 401/500 全局弹窗；
+所有接口返回 ApiResponse<T>（freezed 封装 data / error / isLoading）。
+Repository & State
+使用 StateNotifier<AsyncValue<List<UserDTO>>>；
+分页：page 从 0 开始，size=10；
+缓存：StateNotifier 自带内存缓存 + invalidate 刷新；
+错误重试：3 次指数退避。
+UI 页面
+HookConsumer 自动监听状态；
+列表：RefreshIndicator + ListView.separated；
+详情：Navigator.push 传参；
+新增/编辑：showModalBottomSheet + Form + TextFormField 自动校验；
+删除：Dismissible + 二次确认。
+代码风格
+Flutter 3.19 + Dart 3.3；
+使用 hooks_riverpod: ^2.5.1、retrofit: ^4.1.0、freezed: ^2.4.7；
+100 行以内单文件，统一 part/part of。

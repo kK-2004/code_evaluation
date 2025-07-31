@@ -1,0 +1,894 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>prospectus-search</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>Prospectus Search</name>
+    <description>POC for prospectus semantic search</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <reactor.version>2022.0.0</reactor.version>
+        <pdfbox.version>2.0.29</pdfbox.version>
+        <milvus.version>2.3.0</milvus.version>
+        <openai.version>0.12.0</openai.version>
+    </properties>
+
+    <dependencies>
+        <!-- Spring Boot Starters -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Reactive Programming -->
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-core</artifactId>
+            <version>${reactor.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.projectreactor.addons</groupId>
+            <artifactId>reactor-extra</artifactId>
+            <version>${reactor.version}</version>
+        </dependency>
+
+        <!-- PDF Processing -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>${pdfbox.version}</version>
+        </dependency>
+
+        <!-- Vector Search -->
+        <dependency>
+            <groupId>io.milvus</groupId>
+            <artifactId>milvus-sdk-java</artifactId>
+            <version>${milvus.version}</version>
+        </dependency>
+
+        <!-- AI Embeddings -->
+        <dependency>
+            <groupId>com.theokanning.openai-gpt3-java</groupId>
+            <artifactId>client</artifactId>
+            <version>${openai.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.theokanning.openai-gpt3-java</groupId>
+            <artifactId>service</artifactId>
+            <version>${openai.version}</version>
+        </dependency>
+
+        <!-- Metrics -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Utilities -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-collections4</artifactId>
+            <version>4.4</version>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <compilerArgs>
+                        <arg>-Xlint:unchecked</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: prospectus-search
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+app:
+  pdf:
+    processing:
+      max-pool-size: 8
+      page-concurrency: 4
+      segment:
+        window-size: 512
+        overlap: 64
+  openai:
+    api-key: ${OPENAI_API_KEY}
+    base-url: https://api.openai.com/v1
+    model: text-embedding-ada-002
+    max-retries: 3
+    backoff-initial-interval: 500
+    backoff-max-interval: 5000
+    rate-limit:
+      requests-per-minute: 3000
+      max-concurrent: 10
+  milvus:
+    uri: ${MILVUS_URI:localhost:19530}
+    collection:
+      name: prospectus_chunk
+      partition-key: docId
+      index:
+        type: IVF_SQ8
+        nlist: 4096
+      search-params:
+        nprobe: 32
+    timeout:
+      connect: 5s
+      search: 3s
+      insert: 10s
+  storage:
+    temp-dir: ./temp
+    max-file-size: 1GB
+
+logging:
+  level:
+    root: INFO
+    com.example: DEBUG
+    io.milvus: WARN
+    org.apache.pdfbox: WARN
+
+@startuml
+entity "Prospectus Document" as doc {
+  * docId : String <<PK>>
+  --
+  fileName : String
+  totalPages : Integer
+  uploadTime : DateTime
+}
+
+entity "Text Chunk" as chunk {
+  * id : String <<PK>>
+  --
+  * docId : String <<FK>>
+  title : String
+  chunkNo : Integer
+  content : String
+  embedding : Float[1536]
+  tokens : Integer
+}
+
+doc ||--o{ chunk : "contains"
+@enduml
+
+{
+  "collection_name": "prospectus_chunk",
+  "dimension": 1536,
+  "index_file_size": 1024,
+  "metric_type": "IP",
+  "fields": [
+    {
+      "name": "id",
+      "type": "VARCHAR",
+      "is_primary_key": true,
+      "max_length": 256
+    },
+    {
+      "name": "docId",
+      "type": "VARCHAR",
+      "max_length": 256
+    },
+    {
+      "name": "title",
+      "type": "VARCHAR",
+      "max_length": 512
+    },
+    {
+      "name": "chunkNo",
+      "type": "INT64"
+    },
+    {
+      "name": "content",
+      "type": "VARCHAR",
+      "max_length": 65535
+    },
+    {
+      "name": "embedding",
+      "type": "FLOAT_VECTOR",
+      "dimension": 1536
+    },
+    {
+      "name": "tokens",
+      "type": "INT64"
+    }
+  ]
+}
+
+package com.example.prospectussearch.controller;
+
+import com.example.prospectussearch.service.ProspectusSearchService;
+import com.example.prospectussearch.service.ProspectusUploadService;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
+@RestController
+@RequestMapping("/prospectus")
+public class ProspectusController {
+
+    private final ProspectusUploadService uploadService;
+    private final ProspectusSearchService searchService;
+
+    public ProspectusController(
+            ProspectusUploadService uploadService, ProspectusSearchService searchService) {
+        this.uploadService = uploadService;
+        this.searchService = searchService;
+    }
+
+    @PostMapping("/upload")
+    public Mono<ResponseEntity<String>> uploadProspectus(
+            @RequestParam("file") org.springframework.core.io.buffer.DataBuffer fileBuffer) {
+        return uploadService.processProspectus(fileBuffer)
+                .map(docId -> ResponseEntity.ok(docId))
+                .onErrorResume(e -> Mono.just(ResponseEntity.badRequest().body(e.getMessage())));
+    }
+
+    @GetMapping("/{docId}/search")
+    public Mono<ResponseEntity<?>> searchProspectus(
+            @PathVariable String docId,
+            @RequestParam String q,
+            @RequestParam(defaultValue = "10") int limit) {
+        return searchService.search(docId, q, limit)
+                .collectList()
+                .map(ResponseEntity::ok)
+                .defaultIfEmpty(ResponseEntity.notFound().build());
+    }
+}
+
+package com.example.prospectussearch.service;
+
+import com.example.prospectussearch.config.AppProperties;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.pdfbox.text.TextPosition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+
+@Service
+public class PdfSegmenter {
+
+    private static final Logger logger = LoggerFactory.getLogger(PdfSegmenter.class);
+    private static final Pattern HEADER_FOOTER_PATTERN = Pattern.compile(
+            "^\\s*(\\d+|\\w+\\s+\\d+)\\s*$|Confidential|Draft|Page\\s+\\d+", Pattern.MULTILINE);
+
+    private final AppProperties appProperties;
+
+    public PdfSegmenter(AppProperties appProperties) {
+        this.appProperties = appProperties;
+    }
+
+    public Flux<TextChunk> segmentPdf(String docId, InputStream pdfStream) {
+        return Mono.fromCallable(() -> PDDocument.load(pdfStream))
+                .flatMapMany(document -> {
+                    try {
+                        int totalPages = document.getNumberOfPages();
+                        logger.info("Processing document {} with {} pages", docId, totalPages);
+
+                        return Flux.range(1, totalPages)
+                                .parallel(appProperties.getPdf().getProcessing().getPageConcurrency())
+                                .runOn(Schedulers.boundedElastic())
+                                .flatMap(pageNum -> extractPageText(document, pageNum)
+                                        .map(text -> processPageText(docId, pageNum, text)))
+                                .sequential()
+                                .flatMapIterable(this::splitIntoChunks)
+                                .doFinally(signalType -> {
+                                    try {
+                                        document.close();
+                                    } catch (IOException e) {
+                                        logger.error("Error closing PDF document", e);
+                                    }
+                                });
+                    } catch (Exception e) {
+                        return Flux.error(new RuntimeException("Failed to segment PDF", e));
+                    }
+                });
+    }
+
+    private Mono<String> extractPageText(PDDocument document, int pageNum) {
+        return Mono.fromCallable(() -> {
+            PDFTextStripper stripper = new PDFTextStripper() {
+                @Override
+                protected void writeString(String text, List<TextPosition> textPositions) throws IOException {
+                    // Skip writing if it looks like header/footer
+                    if (!HEADER_FOOTER_PATTERN.matcher(text).find()) {
+                        super.writeString(text, textPositions);
+                    }
+                }
+            };
+            stripper.setStartPage(pageNum);
+            stripper.setEndPage(pageNum);
+            return stripper.getText(document);
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private String processPageText(String docId, int pageNum, String pageText) {
+        // Remove extra whitespaces and normalize
+        return pageText.replaceAll("\\s+", " ").trim();
+    }
+
+    private List<TextChunk> splitIntoChunks(PageText pageText) {
+        List<TextChunk> chunks = new ArrayList<>();
+        String[] sentences = pageText.text().split("(?<=[.!?])\\s+");
+        
+        AppProperties.PdfProcessing.Segment segmentConfig = appProperties.getPdf().getProcessing().getSegment();
+        int windowSize = segmentConfig.getWindowSize();
+        int overlap = segmentConfig.getOverlap();
+        
+        StringBuilder currentChunk = new StringBuilder();
+        AtomicInteger chunkNo = new AtomicInteger(0);
+        int startIndex = 0;
+        
+        for (String sentence : sentences) {
+            int sentenceLength = countTokens(sentence);
+            int currentLength = countTokens(currentChunk.toString());
+            
+            if (currentLength + sentenceLength > windowSize) {
+                if (currentLength > overlap) {
+                    addChunk(chunks, pageText.docId(), pageText.pageNum(), 
+                            currentChunk.toString(), chunkNo.getAndIncrement());
+                    startIndex = currentChunk.length();
+                    currentChunk = new StringBuilder();
+                }
+            }
+            
+            if (currentChunk.length() > 0) {
+                currentChunk.append(" ");
+            }
+            currentChunk.append(sentence);
+        }
+        
+        if (currentChunk.length() > 0) {
+            addChunk(chunks, pageText.docId(), pageText.pageNum(), 
+                    currentChunk.toString(), chunkNo.getAndIncrement());
+        }
+        
+        return chunks;
+    }
+
+    private void addChunk(List<TextChunk> chunks, String docId, int pageNum, 
+                         String content, int chunkNo) {
+        chunks.add(new TextChunk(
+                docId + "-p" + pageNum + "-c" + chunkNo,
+                docId,
+                "Chapter X - Section Y", // In real impl, extract from TOC
+                chunkNo,
+                content,
+                countTokens(content)
+        ));
+    }
+
+    private int countTokens(String text) {
+        // Simple token count - in production use a proper tokenizer
+        return text.trim().isEmpty() ? 0 : text.trim().split("\\s+").length;
+    }
+
+    public record PageText(String docId, int pageNum, String text) {}
+    public record TextChunk(String id, String docId, String title, int chunkNo, 
+                          String content, int tokens) {}
+}
+
+package com.example.prospectussearch.service;
+
+import com.example.prospectussearch.config.AppProperties;
+import com.theokanning.openai.OpenAiApi;
+import com.theokanning.openai.embedding.Embedding;
+import com.theokanning.openai.embedding.EmbeddingRequest;
+import com.theokanning.openai.service.OpenAiService;
+import io.github.oshai.kotlinlogging.KotlinLogging;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+import retrofit2.Retrofit;
+
+import java.net.HttpURLConnection;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+@Service
+public class EmbeddingService {
+
+    private static final Logger logger = LoggerFactory.getLogger(EmbeddingService.class);
+    private static final int MAX_BATCH_SIZE = 20; // OpenAI recommends 20 for embeddings
+
+    private final OpenAiService openAiService;
+    private final Semaphore rateLimiter;
+    private final AppProperties appProperties;
+
+    public EmbeddingService(AppProperties appProperties) {
+        this.appProperties = appProperties;
+        this.rateLimiter = new Semaphore(appProperties.getOpenai().getRateLimit().getMaxConcurrent());
+        
+        // Configure OpenAI client with timeout and retry
+        OpenAiApi api = OpenAiApi.create(
+                appProperties.getOpenai().getBaseUrl(),
+                appProperties.getOpenai().getApiKey(),
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(30)
+        );
+        this.openAiService = new OpenAiService(api);
+    }
+
+    public Flux<TextChunkWithEmbedding> generateEmbeddings(Flux<PdfSegmenter.TextChunk> chunks) {
+        return chunks.bufferTimeout(MAX_BATCH_SIZE, Duration.ofMillis(100))
+                .flatMap(batch -> Mono.fromCallable(() -> acquirePermit())
+                        .flatMap(permit -> generateEmbeddingBatch(batch)
+                                .doFinally(signalType -> releasePermit(permit)))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .flatMapIterable(embeddings -> embeddings);
+    }
+
+    private Mono<List<TextChunkWithEmbedding>> generateEmbeddingBatch(List<PdfSegmenter.TextChunk> chunks) {
+        return Mono.fromCallable(() -> {
+                    List<String> texts = chunks.stream()
+                            .map(PdfSegmenter.TextChunk::content)
+                            .collect(Collectors.toList());
+                    
+                    EmbeddingRequest request = EmbeddingRequest.builder()
+                            .model(appProperties.getOpenai().getModel())
+                            .input(texts)
+                            .build();
+                    
+                    List<Embedding> embeddings = openAiService.createEmbeddings(request).getData();
+                    if (embeddings.size() != chunks.size()) {
+                        throw new IllegalStateException("Embedding count mismatch");
+                    }
+                    
+                    return embeddings.stream()
+                            .map(embedding -> {
+                                float[] vector = embedding.getEmbedding().stream()
+                                        .mapToDouble(Double::floatValue)
+                                        .toArray();
+                                return new TextChunkWithEmbedding(
+                                        chunks.get(embeddings.indexOf(embedding)),
+                                        vector
+                                );
+                            })
+                            .collect(Collectors.toList());
+                })
+                .retryWhen(Retry.backoff(
+                        appProperties.getOpenai().getMaxRetries(),
+                        Duration.ofMillis(appProperties.getOpenai().getBackoffInitialInterval()))
+                        .maxBackoff(Duration.ofMillis(appProperties.getOpenai().getBackoffMaxInterval()))
+                        .filter(this::isRetriable))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private boolean isRetriable(Throwable throwable) {
+        if (throwable instanceof retrofit2.HttpException) {
+            retrofit2.HttpException httpException = (retrofit2.HttpException) throwable;
+            return httpException.code() >= HttpURLConnection.HTTP_INTERNAL_ERROR
+                    || httpException.code() == HttpURLConnection.HTTP_TOO_MANY_REQUESTS;
+        }
+        return true;
+    }
+
+    private Void acquirePermit() throws InterruptedException {
+        if (!rateLimiter.tryAcquire(10, TimeUnit.SECONDS)) {
+            throw new RuntimeException("Rate limit exceeded");
+        }
+        return null;
+    }
+
+    private void releasePermit(Void permit) {
+        rateLimiter.release();
+    }
+
+    public record TextChunkWithEmbedding(
+            PdfSegmenter.TextChunk chunk,
+            float[] embedding) {}
+}
+
+package com.example.prospectussearch.service;
+
+import com.example.prospectussearch.config.AppProperties;
+import io.milvus.client.MilvusClient;
+import io.milvus.client.MilvusServiceClient;
+import io.milvus.grpc.*;
+import io.milvus.param.*;
+import io.milvus.param.collection.*;
+import io.milvus.param.dml.InsertParam;
+import io.milvus.param.dml.QueryParam;
+import io.milvus.param.index.CreateIndexParam;
+import io.milvus.param.index.DescribeIndexParam;
+import io.milvus.param.partition.CreatePartitionParam;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+@Service
+public class MilvusIndexService {
+
+    private static final Logger logger = LoggerFactory.getLogger(MilvusIndexService.class);
+
+    private final MilvusClient milvusClient;
+    private final AppProperties appProperties;
+
+    public MilvusIndexService(AppProperties appProperties) {
+        this.appProperties = appProperties;
+        this.milvusClient = new MilvusServiceClient(
+                ConnectParam.newBuilder()
+                        .withHost(appProperties.getMilvus().getUri())
+                        .withConnectTimeout(
+                                (int) appProperties.getMilvus().getTimeout().getConnect().toMillis(),
+                                TimeUnit.MILLISECONDS)
+                        .build());
+        
+        initializeCollection();
+    }
+
+    private void initializeCollection() {
+        String collectionName = appProperties.getMilvus().getCollection().getName();
+        
+        // Check if collection exists
+        if (!milvusClient.hasCollection(
+                HasCollectionParam.newBuilder().withCollectionName(collectionName).build())) {
+            
+            // Create collection
+            FieldType fieldId = FieldType.newBuilder()
+                    .withName("id")
+                    .withDataType(DataType.VarChar)
+                    .withPrimaryKey(true)
+                    .withMaxLength(256)
+                    .build();
+            
+            FieldType fieldDocId = FieldType.newBuilder()
+                    .withName("docId")
+                    .withDataType(DataType.VarChar)
+                    .withMaxLength(256)
+                    .build();
+            
+            FieldType fieldTitle = FieldType.newBuilder()
+                    .withName("title")
+                    .withDataType(DataType.VarChar)
+                    .withMaxLength(512)
+                    .build();
+            
+            FieldType fieldChunkNo = FieldType.newBuilder()
+                    .withName("chunkNo")
+                    .withDataType(DataType.Int64)
+                    .build();
+            
+            FieldType fieldContent = FieldType.newBuilder()
+                    .withName("content")
+                    .withDataType(DataType.VarChar)
+                    .withMaxLength(65535)
+                    .build();
+            
+            FieldType fieldEmbedding = FieldType.newBuilder()
+                    .withName("embedding")
+                    .withDataType(DataType.FloatVector)
+                    .withDimension(1536)
+                    .build();
+            
+            FieldType fieldTokens = FieldType.newBuilder()
+                    .withName("tokens")
+                    .withDataType(DataType.Int64)
+                    .build();
+            
+            CreateCollectionParam createParam = CreateCollectionParam.newBuilder()
+                    .withCollectionName(collectionName)
+                    .withDescription("Prospectus text chunks with embeddings")
+                    .withShardsNum(2)
+                    .addFieldType(fieldId)
+                    .addFieldType(fieldDocId)
+                    .addFieldType(fieldTitle)
+                    .addFieldType(fieldChunkNo)
+                    .addFieldType(fieldContent)
+                    .addFieldType(fieldEmbedding)
+                    .addFieldType(fieldTokens)
+                    .build();
+            
+            milvusClient.createCollection(createParam);
+            
+            // Create index
+            CreateIndexParam indexParam = CreateIndexParam.newBuilder()
+                    .withCollectionName(collectionName)
+                    .withFieldName("embedding")
+                    .withIndexType(appProperties.getMilvus().getCollection().getIndex().getType())
+                    .withMetricType(MetricType.IP)
+                    .withParams("{\"nlist\": " + appProperties.getMilvus().getCollection().getIndex().getNlist() + "}")
+                    .build();
+            
+            milvusClient.createIndex(indexParam);
+            
+            logger.info("Created collection {} with IVF_SQ8 index", collectionName);
+        }
+    }
+
+    public Mono<Void> indexChunks(Flux<EmbeddingService.TextChunkWithEmbedding> chunks) {
+        return chunks.bufferTimeout(100, Duration.ofMillis(100))
+                .flatMap(batch -> Mono.fromCallable(() -> indexBatch(batch))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .then();
+    }
+
+    private R<MutationResult> indexBatch(List<EmbeddingService.TextChunkWithEmbedding> batch) {
+        String collectionName = appProperties.getMilvus().getCollection().getName();
+        
+        List<String> ids = new ArrayList<>();
+        List<String> docIds = new ArrayList<>();
+        List<String> titles = new ArrayList<>();
+        List<Long> chunkNos = new ArrayList<>();
+        List<String> contents = new ArrayList<>();
+        List<List<Float>> embeddings = new ArrayList<>();
+        List<Long> tokens = new ArrayList<>();
+        
+        for (EmbeddingService.TextChunkWithEmbedding item : batch) {
+            ids.add(item.chunk().id());
+            docIds.add(item.chunk().docId());
+            titles.add(item.chunk().title());
+            chunkNos.add((long) item.chunk().chunkNo());
+            contents.add(item.chunk().content());
+            
+            List<Float> vector = new ArrayList<>();
+            for (float v : item.embedding()) {
+                vector.add(v);
+            }
+            embeddings.add(vector);
+            
+            tokens.add((long) item.chunk().tokens());
+        }
+        
+        InsertParam insertParam = InsertParam.newBuilder()
+                .withCollectionName(collectionName)
+                .withPartitionName(batch.get(0).chunk().docId()) // Partition by docId
+                .addField("id", ids)
+                .addField("docId", docIds)
+                .addField("title", titles)
+                .addField("chunkNo", chunkNos)
+                .addField("content", contents)
+                .addField("embedding", embeddings)
+                .addField("tokens", tokens)
+                .build();
+        
+        return milvusClient.insert(insertParam);
+    }
+
+    public Flux<SearchResult> search(String docId, float[] queryEmbedding, int limit) {
+        String collectionName = appProperties.getMilvus().getCollection().getName();
+        
+        SearchParam searchParam = SearchParam.newBuilder()
+                .withCollectionName(collectionName)
+                .withPartitionNames(List.of(docId))
+                .withMetricType(MetricType.IP)
+                .withTopK(limit)
+                .withParams("{\"nprobe\": " + appProperties.getMilvus().getCollection().getSearchParams().getNprobe() + "}")
+                .withVectors(List.of(queryEmbedding))
+                .withVectorFieldName("embedding")
+                .build();
+        
+        return Mono.fromCallable(() -> milvusClient.search(searchParam))
+                .flatMapMany(result -> Flux.fromIterable(result.getData().getResults())
+                        .map(searchResult -> {
+                            List<FieldData> fields = searchResult.getFieldsData();
+                            return new SearchResult(
+                                    fields.get(0).getScalars().getStringData().getDataList(),
+                                    fields.get(1).getScalars().getStringData().getDataList(),
+                                    fields.get(2).getScalars().getStringData().getDataList(),
+                                    fields.get(3).getScalars().getLongData().getDataList(),
+                                    fields.get(4).getScalars().getStringData().getDataList(),
+                                    searchResult.getScores()
+                            );
+                        }))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    public record SearchResult(
+            List<String> ids,
+            List<String> docIds,
+            List<String> titles,
+            List<Long> chunkNos,
+            List<String> contents,
+            List<Float> scores) {}
+}
+
+package com.example.prospectussearch.service;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.UUID;
+
+@Service
+public class ProspectusUploadService {
+
+    private static final Logger logger = LoggerFactory.getLogger(ProspectusUploadService.class);
+
+    private final PdfSegmenter pdfSegmenter;
+    private final EmbeddingService embeddingService;
+    private final MilvusIndexService milvusIndexService;
+
+    public ProspectusUploadService(
+            PdfSegmenter pdfSegmenter,
+            EmbeddingService embeddingService,
+            MilvusIndexService milvusIndexService) {
+        this.pdfSegmenter = pdfSegmenter;
+        this.embeddingService = embeddingService;
+        this.milvusIndexService = milvusIndexService;
+    }
+
+    public Mono<String> processProspectus(org.springframework.core.io.buffer.DataBuffer fileBuffer) {
+        String docId = UUID.randomUUID().toString();
+        
+        return Mono.fromCallable(() -> {
+                    Path tempFile = Files.createTempFile("prospectus-", ".pdf");
+                    try (InputStream is = fileBuffer.asInputStream()) {
+                        Files.copy(is, tempFile);
+                    }
+                    return tempFile;
+                })
+                .flatMap(tempFile -> pdfSegmenter.segmentPdf(docId, Files.newInputStream(tempFile))
+                        .transform(embeddingService::generateEmbeddings)
+                        .transform(milvusIndexService::indexChunks)
+                        .thenReturn(docId)
+                        .doFinally(signalType -> {
+                            try {
+                                Files.deleteIfExists(tempFile);
+                            } catch (Exception e) {
+                                logger.error("Error deleting temp file", e);
+                            }
+                        }))
+                .subscribeOn(Schedulers.boundedElastic())
+                .timeout(Duration.ofSeconds(30))
+                .onErrorResume(e -> {
+                    logger.error("Error processing prospectus", e);
+                    return Mono.error(new RuntimeException("Failed to process prospectus", e));
+                });
+    }
+}
+
+package com.example.prospectussearch.service;
+
+import com.example.prospectussearch.config.AppProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.UUID;
+
+@Service
+public class ProspectusSearchService {
+
+    private static final Logger logger = LoggerFactory.getLogger(ProspectusSearchService.class);
+
+    private final EmbeddingService embeddingService;
+    private final MilvusIndexService milvusIndexService;
+    private final AppProperties appProperties;
+
+    public ProspectusSearchService(
+            EmbeddingService embeddingService,
+            MilvusIndexService milvusIndexService,
+            AppProperties appProperties) {
+        this.embeddingService = embeddingService;
+        this.milvusIndexService = milvusIndexService;
+        this.appProperties = appProperties;
+    }
+
+    public Flux<SearchResponse> search(String docId, String query, int limit) {
+        return Mono.fromCallable(() -> {
+                    // In a real implementation, we would cache embeddings for common queries
+                    return embeddingService.generateEmbeddings(
+                            Flux.just(new PdfSegmenter.TextChunk(
+                                    UUID.randomUUID().toString(),
+                                    docId,
+                                    "Query",
+                                    0,
+                                    query,
+                                    countTokens(query)
+                            )))
+                            .next();
+                })
+                .flatMapMany(queryEmbedding -> milvusIndexService.search(docId, queryEmbedding.embedding(), limit))
+                .map(result -> new SearchResponse(
+                        result.ids().get(0),
+                        result.docIds().get(0),
+                        result.titles().get(0),
+                        result.chunkNos().get(0).intValue(),
+                        result.contents().get(0),
+                        result.scores().get(0)
+                ))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private int countTokens(String text) {
+        // Simple token count - in production use a proper tokenizer
+        return text.trim().isEmpty() ? 0 : text.trim().split("\\s+").length;
+    }
+
+    public record SearchResponse(
+            String id,
+            String docId,
+            String title,
+            int chunkNo,
+            String content,
+            float score) {}
+}

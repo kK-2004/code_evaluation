@@ -1,0 +1,155 @@
+package com.xxx.infra.feign;
+
+import com.xxx.infra.feign.dto.CreateOrderRequest;
+import com.xxx.infra.feign.dto.OrderDto;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.*;
+
+/**
+ * Order Service Feign Client
+ * 使用OpenFeign声明式REST客户端调用订单服务
+ * 
+ * @FeignClient 注解参数说明：
+ * - name: 指定服务名称（对应Eureka/Nacos中的服务ID）
+ * - path: 定义公共路径前缀，与@RequestMapping一致
+ */
+@FeignClient(name = "order-service", path = "/v1/orders")
+public interface OrderApiClient {
+
+    /**
+     * 创建订单接口
+     * 
+     * @param req 创建订单请求体，包含客户信息和商品项
+     * @param tenantId 租户ID，通过请求头传递
+     * @return 创建成功的订单信息
+     */
+    @PostMapping
+    OrderDto create(@RequestBody CreateOrderRequest req,
+                    @RequestHeader("x-tenant-id") String tenantId);
+
+    /**
+     * 根据ID获取订单详情
+     * 
+     * @param id 订单ID，通过路径变量传递
+     * @return 订单详情
+     */
+    @GetMapping("/{id}")
+    OrderDto get(@PathVariable Long id);
+}
+
+package com.xxx.infra.feign.dto;
+
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+
+/**
+ * 订单响应DTO
+ */
+@Data
+public class OrderDto {
+    private Long id;                  // 订单ID
+    private String orderNumber;       // 订单编号
+    private String status;            // 订单状态
+    private BigDecimal totalAmount;   // 订单总金额
+    private Instant createdAt;        // 创建时间
+    private List<OrderItemDto> items; // 订单商品项列表
+}
+
+/**
+ * 订单商品项DTO
+ */
+@Data
+class OrderItemDto {
+    private Long productId;    // 商品ID
+    private String productName;// 商品名称
+    private Integer quantity;  // 购买数量
+    private BigDecimal price;  // 商品单价
+}
+
+/**
+ * 创建订单请求DTO
+ */
+@Data
+public class CreateOrderRequest {
+    private String customerName;      // 客户名称
+    private List<OrderItem> items;    // 商品项列表
+
+    /**
+     * 订单商品项请求对象
+     */
+    @Data
+    public static class OrderItem {
+        private Long productId;       // 商品ID
+        private Integer quantity;     // 购买数量
+    }
+}
+
+package com.xxx.infra.feign;
+
+import com.xxx.infra.feign.dto.CreateOrderRequest;
+import com.xxx.infra.feign.dto.OrderDto;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
+import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * OrderApiClient 集成测试
+ * 使用WireMock模拟远程服务
+ * 
+ * 测试说明：
+ * 1. @SpringBootTest 加载完整应用上下文
+ * 2. @AutoConfigureWireMock 启动WireMock服务器（默认端口8080）
+ * 3. 测试前会自动加载wiremock/mappings下的stub定义
+ */
+@SpringBootTest
+@AutoConfigureWireMock(port = 8080)
+@SpringJUnitConfig
+class OrderApiClientTest {
+
+    @Autowired
+    private OrderApiClient orderApiClient;
+
+    @Test
+    void createOrder_shouldReturnCreatedOrder() {
+        // 准备请求数据
+        CreateOrderRequest request = new CreateOrderRequest();
+        request.setCustomerName("Test Customer");
+        
+        CreateOrderRequest.OrderItem item = new CreateOrderRequest.OrderItem();
+        item.setProductId(2001L);
+        item.setQuantity(1);
+        request.setItems(List.of(item));
+
+        // 调用Feign客户端（实际会调用WireMock）
+        OrderDto result = orderApiClient.create(request, "tenant-1");
+
+        // 验证结果
+        assertThat(result).isNotNull();
+        assertThat(result.getId()).isEqualTo(1001);
+        assertThat(result.getOrderNumber()).startsWith("ORD");
+        assertThat(result.getItems()).hasSize(1);
+    }
+
+    @Test
+    void getOrder_shouldReturnOrderDetails() {
+        // 调用Feign客户端获取订单详情
+        OrderDto result = orderApiClient.get(1001L);
+
+        // 验证结果
+        assertThat(result).isNotNull();
+        assertThat(result.getId()).isEqualTo(1001);
+        assertThat(result.getStatus()).isEqualTo("PROCESSING");
+        assertThat(result.getItems())
+            .anySatisfy(item -> {
+                assertThat(item.getProductId()).isEqualTo(2001);
+                assertThat(item.getProductName()).isEqualTo("Wireless Headphone");
+            });
+    }
+}
